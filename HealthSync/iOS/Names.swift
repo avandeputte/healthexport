@@ -42,23 +42,6 @@ enum WorkoutNames {
     }
 }
 
-enum ECGNames {
-    static func classification(_ c: HKElectrocardiogram.Classification) -> String {
-        switch c {
-        case .notSet: return "notSet"; case .sinusRhythm: return "sinusRhythm"; case .atrialFibrillation: return "atrialFibrillation"
-        case .inconclusiveLowHeartRate: return "inconclusiveLowHeartRate"; case .inconclusiveHighHeartRate: return "inconclusiveHighHeartRate"
-        case .inconclusivePoorReading: return "inconclusivePoorReading"; case .inconclusiveOther: return "inconclusiveOther"; case .unrecognized: return "unrecognized"
-        @unknown default: return "classification_\(c.rawValue)"
-        }
-    }
-    static func symptoms(_ s: HKElectrocardiogram.SymptomsStatus) -> String {
-        switch s {
-        case .notSet: return "notSet"; case .none: return "none"; case .present: return "present"
-        @unknown default: return "symptoms_\(s.rawValue)"
-        }
-    }
-}
-
 enum CategoryValueNames {
     static func name(for type: String, value: Int) -> String? {
         switch type {

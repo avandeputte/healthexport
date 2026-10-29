@@ -75,7 +75,6 @@ Running it again later sends only what's new or changed. If you create a fresh d
 | `samples` | every quantity and category sample: `type` (e.g. `HKQuantityTypeIdentifierHeartRate`), `value`, `unit`, `start_date`, `end_date`; `text` holds names for category values (`asleep`, `deep`, `rem`…), audiogram points as JSON, etc.; `metadata_json`, `device_json` and `source_*` carry the rest |
 | `workouts`, `workout_statistics`, `workout_events`, `workout_activities` | workouts with per‑workout heart rate / distance / energy stats, laps/pauses, and multisport segments |
 | `workout_route_points` | GPS traces (lat, lon, altitude, speed, course, accuracy) |
-| `ecgs`, `ecg_voltages` | every ECG, with the full 512 Hz voltage trace |
 | `heartbeats` | beat‑to‑beat intervals behind HRV readings |
 | `activity_summaries` | daily Move / Exercise / Stand rings and goals |
 | `characteristics` | date of birth, biological sex, blood type, skin type, wheelchair use |
@@ -104,6 +103,9 @@ GROUP BY night, stage ORDER BY night DESC;
 
 ## Not included
 
+- **ECGs**: the wire format and database tables support them, but the iPhone app doesn't request or send them
+  (the voltage traces are most of the data and Alex has no use for them). Re-add `electrocardiogramType()` to
+  `HealthTypes.readTypes` and an ECG query in `HealthReader` to turn them back on.
 - **Clinical (FHIR) health records** need the separate "Clinical Health Records" entitlement, which Apple grants
   per app. If you use that feature, add `health-records` to `com.apple.developer.healthkit.access` in
   `iOS/HealthSync.entitlements` and open an issue; the reader can be extended.
