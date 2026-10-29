@@ -69,17 +69,6 @@ final class HealthReader {
             return s
         }
 
-        if #available(iOS 16.0, *) {
-            progress("Vision prescriptions")
-            try await syncSamples(of: HKObjectType.visionPrescriptionType(), emit: emit) { sample in
-                guard let v = sample as? HKVisionPrescription else { return nil }
-                var s = self.baseSample(v, kind: "visionPrescription")
-                s.text = self.json(["prescriptionType": v.prescriptionType.rawValue, "dateIssued": v.dateIssued.timeIntervalSince1970,
-                                    "expirationDate": v.expirationDate?.timeIntervalSince1970 as Any, "description": String(describing: v)])
-                return s
-            }
-        }
-
         progress("Workouts")
         try await syncWorkouts(emit)
 
