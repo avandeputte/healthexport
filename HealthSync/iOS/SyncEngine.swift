@@ -1,8 +1,7 @@
 import Foundation
-import Network
 import UIKit
 
-/// The one place a sync runs from, whether the user tapped a Mac, the app was opened, HealthKit woke us in
+/// The one place a sync runs from, whether the user tapped Sync now, the app was opened, HealthKit woke us in
 /// the background, or iOS granted a background refresh. Only one sync runs at a time.
 @MainActor
 final class SyncEngine: ObservableObject {
@@ -20,10 +19,13 @@ final class SyncEngine: ObservableObject {
     @Published var autoSync = UserDefaults.standard.object(forKey: "autoSync") as? Bool ?? true {
         didSet { UserDefaults.standard.set(autoSync, forKey: "autoSync") }
     }
-    @Published private(set) var lastMacName: String? = UserDefaults.standard.string(forKey: "lastMac")
-    /// Optional "host" or "host:port" typed by the user; tried before Bonjour when set.
-    @Published var manualAddress: String = UserDefaults.standard.string(forKey: "manualAddress") ?? "" {
-        didSet { UserDefaults.standard.set(manualAddress, forKey: "manualAddress") }
+    /// The receiver's base URL, e.g. https://health.example.com or http://192.168.1.10:47800.
+    @Published var serverAddress: String = UserDefaults.standard.string(forKey: "serverAddress") ?? "" {
+        didSet { UserDefaults.standard.set(serverAddress, forKey: "serverAddress") }
+    }
+    /// Kept in the Keychain, not UserDefaults.
+    @Published var token: String = TokenStore.token {
+        didSet { TokenStore.token = token.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
     @Published private(set) var lastSynced: Date? = UserDefaults.standard.object(forKey: "lastSynced") as? Date
     @Published private(set) var lastTrigger: Trigger? = UserDefaults.standard.string(forKey: "lastTrigger").flatMap(Trigger.init)
@@ -44,33 +46,16 @@ final class SyncEngine: ObservableObject {
         }
     }
 
-    /// Sync to a Mac found by browsing.
-    func sync(to receiver: SyncClient.Receiver, trigger: Trigger) async {
-        await run(macName: receiver.name, endpoint: receiver.endpoint, trigger: trigger, deadline: nil)
+    var server: SyncClient.Server? {
+        SyncClient.Server(address: serverAddress, token: token.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    /// Whether an automatic sync has somewhere to go: a typed-in address or a remembered Mac.
-    var hasTarget: Bool { manualEndpoint != nil || lastMacName != nil }
+    /// Whether a sync has somewhere to go.
+    var hasTarget: Bool { server != nil }
 
-    private var manualEndpoint: NWEndpoint? {
-        let text = manualAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
-        var host = text, port = SyncProtocol.defaultPort
-        if let colon = text.lastIndex(of: ":"), !text.hasPrefix("["), text.filter({ $0 == ":" }).count == 1,
-           let p = UInt16(text[text.index(after: colon)...]) {
-            host = String(text[..<colon]); port = p
-        }
-        return .hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port) ?? .any)
-    }
-
-    /// Sync without browsing: to the typed-in address if there is one, else to the last Mac by its Bonjour name.
-    func syncToLastMac(trigger: Trigger, deadline: Date?) async {
-        if let endpoint = manualEndpoint {
-            await run(macName: manualAddress.trimmingCharacters(in: .whitespacesAndNewlines), endpoint: endpoint, trigger: trigger, deadline: deadline)
-        } else if let name = lastMacName {
-            let endpoint = NWEndpoint.service(name: name, type: SyncProtocol.bonjourType, domain: "local.", interface: nil)
-            await run(macName: name, endpoint: endpoint, trigger: trigger, deadline: deadline)
-        }
+    func syncNow(trigger: Trigger, deadline: Date?) async {
+        guard let server else { return }
+        await run(server: server, trigger: trigger, deadline: deadline)
     }
 
     /// Called from HealthKit observer wakes and background refresh. Coalesces the burst of observer callbacks
@@ -83,7 +68,7 @@ final class SyncEngine: ObservableObject {
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "HealthSync") { [weak self] in
             MainActor.assumeIsolated { self?.endBackgroundTask() }
         }
-        await syncToLastMac(trigger: trigger, deadline: Date().addingTimeInterval(22))
+        await syncNow(trigger: trigger, deadline: Date().addingTimeInterval(22))
         endBackgroundTask()
     }
 
@@ -95,7 +80,7 @@ final class SyncEngine: ObservableObject {
         backgroundTask = .invalid
     }
 
-    private func run(macName: String, endpoint: NWEndpoint, trigger: Trigger, deadline: Date?) async {
+    private func run(server: SyncClient.Server, trigger: Trigger, deadline: Date?) async {
         guard !isRunning else { return }
         isRunning = true
         defer { isRunning = false }
@@ -107,55 +92,41 @@ final class SyncEngine: ObservableObject {
         if foreground { UIApplication.shared.isIdleTimerDisabled = true }
         defer { if foreground { UIApplication.shared.isIdleTimerDisabled = false } }
 
-        var connection: SyncClient.Connection?
         do {
-            let c = try await SyncClient.Connection.open(to: endpoint)
-            connection = c
-            try await c.send(.hello(.init(protocolVersion: SyncProtocol.version,
-                                          deviceName: UIDevice.current.name,
-                                          systemVersion: UIDevice.current.systemVersion,
-                                          fullResync: fullResync)))
-            var n = 0
+            let upload = try await SyncClient.Upload.start(server: server, hello: .init(
+                protocolVersion: SyncProtocol.version, deviceName: UIDevice.current.name,
+                systemVersion: UIDevice.current.systemVersion, fullResync: fullResync))
+            reader.checkpoint = { try await upload.flush() }
+            defer { reader.checkpoint = {} }
             var ranOutOfTime = false
             do {
                 try await reader.readAll(progress: { [weak self] label in
                     Task { @MainActor in self?.currentType = label }
                 }, emit: { [weak self] message in
                     if let deadline, Date() > deadline { throw SyncError.outOfTime }
-                    try await c.send(message)
-                    n += 1
-                    if n % 2_000 == 0 { await MainActor.run { self?.sentCount = n } }
+                    try await upload.send(message)
+                    if upload.sent % 2_000 == 0 { let n = upload.sent; await MainActor.run { self?.sentCount = n } }
                 })
             } catch SyncError.outOfTime {
-                // Anchors for finished batches are saved, so the next run picks up where this one stopped.
+                // Anchors only moved for batches the server committed, so the next run picks up from there.
                 ranOutOfTime = true
             }
-            try await c.send(.done(totalSent: n))
-            try await c.flush()
-            _ = try await c.waitForAck()
-            c.close()
+            let n = upload.sent
+            _ = try await upload.finish(totalSent: n)
             sentCount = n
             fullResync = false
-            remember(macName: macName, trigger: trigger)
+            remember(trigger: trigger)
             state = ranOutOfTime ? .paused(n) : .done(n)
         } catch {
-            connection?.close()
             state = .failed(error.localizedDescription)
         }
         BackgroundSync.scheduleRefresh()
     }
 
-    private func remember(macName: String, trigger: Trigger) {
-        lastMacName = macName
+    private func remember(trigger: Trigger) {
         lastSynced = Date()
         lastTrigger = trigger
-        UserDefaults.standard.set(macName, forKey: "lastMac")
         UserDefaults.standard.set(lastSynced, forKey: "lastSynced")
         UserDefaults.standard.set(trigger.rawValue, forKey: "lastTrigger")
-    }
-
-    func forgetMac() {
-        lastMacName = nil
-        UserDefaults.standard.removeObject(forKey: "lastMac")
     }
 }

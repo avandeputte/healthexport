@@ -61,6 +61,16 @@ var migrations = [][]string{
 			"id INT AUTO_INCREMENT PRIMARY KEY, started_at DATETIME(3), finished_at DATETIME(3), " +
 			"device VARCHAR(255), `system` VARCHAR(32), full_resync BOOL, items INT)",
 	},
+	// 2: HTTP uploads come in numbered batches; remembering the last one makes a retried batch a no-op.
+	{
+		"ALTER TABLE sync_log ADD COLUMN IF NOT EXISTS last_batch_seq INT NOT NULL DEFAULT 0",
+	},
+}
+
+func schemaVersion(db *sql.DB) (int, error) {
+	var v int
+	err := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&v)
+	return v, err
 }
 
 // createDatabase makes the database if the user is allowed to; if not, it must already exist.

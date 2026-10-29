@@ -18,18 +18,15 @@ type batch struct {
 	rows  [][]any
 }
 
-const batchRows = 1000     // rows per INSERT statement
-const commitEvery = 50_000 // messages per transaction
+const batchRows = 1000 // rows per INSERT statement
 
 // Session applies one phone connection's messages to MariaDB. Not safe for concurrent use; the server runs one at a time.
 type Session struct {
-	db          *sql.DB
-	tx          *sql.Tx
-	batches     map[string]*batch
-	order       []string
-	sinceCommit int
-	Applied     int
-	logID       int64
+	db      *sql.DB
+	tx      *sql.Tx
+	batches map[string]*batch
+	order   []string
+	Applied int
 }
 
 func NewSession(db *sql.DB) *Session {
@@ -123,7 +120,6 @@ func (s *Session) Commit() error {
 	}
 	err := s.tx.Commit()
 	s.tx = nil
-	s.sinceCommit = 0
 	return err
 }
 
@@ -134,24 +130,15 @@ func (s *Session) Rollback() {
 	}
 }
 
-// Apply handles one message. It returns true for `done`, after which the caller sends the ack.
-func (s *Session) Apply(m Message) (bool, error) {
+// Apply adds one message to the current transaction. The caller commits once per batch, so a batch is all or nothing.
+func (s *Session) Apply(m Message) error {
 	if err := s.begin(); err != nil {
-		return false, err
+		return err
 	}
 	switch {
-	case m.Hello != nil:
-		h := m.Hello
-		res, err := s.tx.Exec("INSERT INTO sync_log (started_at, device, `system`, full_resync, items) VALUES (?,?,?,?,0)",
-			time.Now().UTC(), h.DeviceName, h.SystemVersion, h.FullResync)
-		if err != nil {
-			return false, err
-		}
-		s.logID, _ = res.LastInsertId()
-
 	case m.Characteristic != nil:
 		if err := s.add("characteristics", m.Characteristic.Key, m.Characteristic.Value); err != nil {
-			return false, err
+			return err
 		}
 
 	case m.Sample != nil:
@@ -159,70 +146,55 @@ func (s *Session) Apply(m Message) (bool, error) {
 		if err := s.add("samples", x.UUID, x.Type, x.Kind, x.Start.UTC(), x.End.UTC(), x.Value, x.Unit, x.Text, x.Count,
 			x.Source.Name, x.Source.BundleID, x.Source.Version, x.Source.ProductType, x.Source.OSVersion,
 			rawJSON(x.Device), mapJSON(x.Metadata)); err != nil {
-			return false, err
+			return err
 		}
 
 	case m.Workout != nil:
 		if err := s.applyWorkout(m.Workout); err != nil {
-			return false, err
+			return err
 		}
 
 	case m.RoutePoint != nil:
 		p := m.RoutePoint
 		if err := s.add("workout_route_points", p.WorkoutUUID, p.RouteUUID, p.Time.UTC(), p.Latitude, p.Longitude, p.Altitude,
 			p.HorizontalAccuracy, p.VerticalAccuracy, p.Speed, p.Course); err != nil {
-			return false, err
+			return err
 		}
 
 	case m.Heartbeat != nil:
 		h := m.Heartbeat
 		if err := s.add("heartbeats", h.SeriesUUID, h.TimeSinceStart, h.PrecededByGap); err != nil {
-			return false, err
+			return err
 		}
 
 	case m.ActivitySummary != nil:
 		a := m.ActivitySummary
 		if err := s.add("activity_summaries", a.Date, a.ActiveEnergyBurned, a.ActiveEnergyBurnedGoal, a.AppleExerciseTime,
 			a.AppleExerciseTimeGoal, a.AppleStandHours, a.AppleStandHoursGoal, a.AppleMoveTime, a.AppleMoveTimeGoal); err != nil {
-			return false, err
+			return err
 		}
 
 	case m.Deleted != nil:
 		// Buffered inserts first, so a delete always wins over an earlier add of the same object.
 		if err := s.flushAll(); err != nil {
-			return false, err
+			return err
 		}
 		d := m.Deleted
 		for _, q := range []string{"DELETE FROM samples WHERE uuid = ?", "DELETE FROM workouts WHERE uuid = ?"} {
 			if _, err := s.tx.Exec(q, d.UUID); err != nil {
-				return false, err
+				return err
 			}
 		}
 		if _, err := s.tx.Exec("REPLACE INTO deleted_objects VALUES (?,?,?)", d.UUID, d.Type, time.Now().UTC()); err != nil {
-			return false, err
+			return err
 		}
 
-	case m.Done != nil:
-		if err := s.flushAll(); err != nil {
-			return false, err
-		}
-		if s.logID != 0 {
-			if _, err := s.tx.Exec("UPDATE sync_log SET finished_at = ?, items = ? WHERE id = ?", time.Now().UTC(), m.Done.TotalSent, s.logID); err != nil {
-				return false, err
-			}
-		}
-		return true, s.Commit()
-
-	default: // typeDone, ignored ECG messages
-		return false, nil
+	default: // typeDone, ignored ECG messages; hello and done have their own endpoints
+		return nil
 	}
 
 	s.Applied++
-	s.sinceCommit++
-	if s.sinceCommit >= commitEvery {
-		return false, s.Commit()
-	}
-	return false, nil
+	return nil
 }
 
 func (s *Session) applyWorkout(w *Workout) error {
@@ -263,6 +235,39 @@ func (s *Session) applyWorkout(w *Workout) error {
 		}
 	}
 	return nil
+}
+
+// ClaimBatch locks the sync's row and records `seq` as applied, inside the batch's own transaction. It returns false
+// if a batch with this sequence number was already committed (a retry after a lost reply), and sql.ErrNoRows for an
+// unknown sync.
+func (s *Session) ClaimBatch(id int64, seq int) (bool, error) {
+	if err := s.begin(); err != nil {
+		return false, err
+	}
+	var last int
+	if err := s.tx.QueryRow("SELECT last_batch_seq FROM sync_log WHERE id = ? FOR UPDATE", id).Scan(&last); err != nil {
+		return false, err
+	}
+	if seq <= last {
+		return false, nil
+	}
+	_, err := s.tx.Exec("UPDATE sync_log SET last_batch_seq = ? WHERE id = ?", seq, id)
+	return err == nil, err
+}
+
+// StartSync records a new sync in sync_log and returns its id.
+func StartSync(db *sql.DB, h Hello) (int64, error) {
+	res, err := db.Exec("INSERT INTO sync_log (started_at, device, `system`, full_resync, items) VALUES (?,?,?,?,0)",
+		time.Now().UTC(), h.DeviceName, h.SystemVersion, h.FullResync)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func FinishSync(db *sql.DB, id int64, totalSent int) error {
+	_, err := db.Exec("UPDATE sync_log SET finished_at = ?, items = ? WHERE id = ?", time.Now().UTC(), totalSent, id)
+	return err
 }
 
 func TotalRows(db *sql.DB) (int, error) {
