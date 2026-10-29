@@ -5,7 +5,8 @@
 # Update later with: docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d
 services:
   receiver:
-    image: ghcr.io/avandeputte/healthexport-receiver:latest
+    # latest is built from main; before merging, use the branch tag, e.g. RECEIVER_TAG=claude-health-sync-apps in .env.
+    image: ghcr.io/avandeputte/healthexport-receiver:${RECEIVER_TAG:-latest}
     restart: unless-stopped
     env_file: .env
     ports:
