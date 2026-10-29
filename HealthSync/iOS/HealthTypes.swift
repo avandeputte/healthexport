@@ -76,6 +76,26 @@ enum HealthTypes {
         "HKCategoryTypeIdentifierWheezing",
     ]
 
+    /// The name a type is stored under on the server: the HealthKit identifier without its prefix, in snake_case
+    /// ("HKQuantityTypeIdentifierHeartRate" -> "heart_rate", "...VO2Max" -> "vo2_max", "...HeartRateVariabilitySDNN" ->
+    /// "heart_rate_variability_sdnn"). Anchors and settings keep using the HealthKit identifier.
+    /// receiver/typenames.go implements the same rule for rows stored before this existed.
+    static func storageName(_ identifier: String) -> String {
+        var name = identifier
+        for prefix in ["HKQuantityTypeIdentifier", "HKCategoryTypeIdentifier", "HKCharacteristicTypeIdentifier",
+                       "HKDataTypeIdentifier"] where name.hasPrefix(prefix) {
+            name.removeFirst(prefix.count)
+            break
+        }
+        // "HKWorkoutTypeIdentifier" -> "Workout", "HKActivitySummaryTypeIdentifier" -> "ActivitySummary".
+        if name.hasPrefix("HK") {
+            name.removeFirst(2)
+            if name.hasSuffix("TypeIdentifier"), name.count > "TypeIdentifier".count { name.removeLast("TypeIdentifier".count) }
+        }
+        return name.replacingOccurrences(of: "(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", with: "_", options: .regularExpression)
+            .lowercased()
+    }
+
     static var quantityTypes: [HKQuantityType] {
         quantityIdentifiers.compactMap { HKObjectType.quantityType(forIdentifier: HKQuantityTypeIdentifier(rawValue: $0)) }
     }

@@ -123,13 +123,17 @@ All InnoDB/utf8mb4, timestamps in UTC as `DATETIME(3)`:
 
 | table | contents |
 |---|---|
-| `samples` | every quantity and category sample: `type` (e.g. `HKQuantityTypeIdentifierHeartRate`), `value`, `unit`, `start_date`, `end_date`; `text` holds names for category values (`asleep`, `deep`, `rem`…), audiogram points as JSON, etc.; `metadata_json`, `device_json` and `source_*` carry the rest |
-| `workouts`, `workout_statistics`, `workout_events`, `workout_activities` | workouts with per‑workout heart rate / distance / energy stats, laps/pauses, and multisport segments |
+| `samples` | every quantity and category sample: `type` (a short snake_case name: `heart_rate`, `step_count`, `sleep_analysis`, `vo2_max`…), `value`, `unit`, `start_date`, `end_date`, `count` (more than 1 for samples some apps pre-aggregate); `text` holds names for category values (`asleep`, `deep`, `rem`…), audiogram points as JSON, etc.; `source_name` is the app or device that recorded it; `metadata_json` carries the rest |
+| `workouts`, `workout_statistics`, `workout_events`, `workout_activities` | workouts (with `source_name` and `metadata_json`) and their per‑workout heart rate / distance / energy stats, laps/pauses, and multisport segments |
 | `workout_route_points` | GPS traces (lat, lon, altitude, speed, course, accuracy) |
 | `heartbeats` | beat‑to‑beat intervals behind HRV readings |
 | `activity_summaries` | daily Move / Exercise / Stand rings and goals |
 | `characteristics` | date of birth, biological sex, blood type, skin type, wheelchair use |
 | `deleted_objects`, `sync_log`, `schema_version` | bookkeeping |
+
+Type names are the HealthKit identifier without its prefix, in snake_case (`HKQuantityTypeIdentifierHeartRateVariabilitySDNN`
+→ `heart_rate_variability_sdnn`); the phone and the receiver share the rule (`HealthTypes.storageName`,
+`receiver/typenames.go`).
 
 Units are your Health app's preferred units (kg or lb, km or mi …) where Apple exposes them, otherwise metric;
 the `unit` column always says which.
@@ -139,13 +143,13 @@ Example queries:
 ```sql
 -- resting heart rate, last 30 days
 SELECT DATE(start_date) d, ROUND(AVG(value)) bpm
-FROM samples WHERE type = 'HKQuantityTypeIdentifierRestingHeartRate'
+FROM samples WHERE type = 'resting_heart_rate'
 GROUP BY d ORDER BY d DESC LIMIT 30;
 
 -- hours of sleep per night by stage
 SELECT DATE(start_date - INTERVAL 12 HOUR) night, text stage,
        ROUND(SUM(TIMESTAMPDIFF(SECOND, start_date, end_date)) / 3600, 2) hours
-FROM samples WHERE type = 'HKCategoryTypeIdentifierSleepAnalysis'
+FROM samples WHERE type = 'sleep_analysis'
 GROUP BY night, stage ORDER BY night DESC;
 ```
 

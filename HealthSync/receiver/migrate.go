@@ -9,11 +9,17 @@ import (
 
 const tableOptions = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
 
+// migration is a list of statements, and optionally Go code run after them.
+type migration struct {
+	stmts []string
+	run   func(*sql.DB) error
+}
+
 // migrations are applied in order, once each, and recorded in schema_version. To change the schema, append a new
 // entry; never edit one that has shipped. Timestamps are UTC.
-var migrations = [][]string{
+var migrations = []migration{
 	// 1: the Mac app's SQLite tables (Mac/SyncDatabase.swift), minus ECGs.
-	{
+	{stmts: []string{
 		"CREATE TABLE IF NOT EXISTS characteristics (`key` VARCHAR(64) PRIMARY KEY, value TEXT)",
 		`CREATE TABLE IF NOT EXISTS samples (
 			uuid CHAR(36) PRIMARY KEY,
@@ -60,11 +66,20 @@ var migrations = [][]string{
 		"CREATE TABLE IF NOT EXISTS sync_log (" +
 			"id INT AUTO_INCREMENT PRIMARY KEY, started_at DATETIME(3), finished_at DATETIME(3), " +
 			"device VARCHAR(255), `system` VARCHAR(32), full_resync BOOL, items INT)",
-	},
+	}},
 	// 2: HTTP uploads come in numbered batches; remembering the last one makes a retried batch a no-op.
-	{
+	{stmts: []string{
 		"ALTER TABLE sync_log ADD COLUMN IF NOT EXISTS last_batch_seq INT NOT NULL DEFAULT 0",
-	},
+	}},
+	// 3: the phone only sends the source's name now; drop the columns nobody used.
+	{stmts: []string{
+		"ALTER TABLE samples DROP COLUMN IF EXISTS source_bundle, DROP COLUMN IF EXISTS source_version, " +
+			"DROP COLUMN IF EXISTS source_product, DROP COLUMN IF EXISTS source_os, DROP COLUMN IF EXISTS device_json",
+		"ALTER TABLE workouts DROP COLUMN IF EXISTS source_bundle, DROP COLUMN IF EXISTS source_version, " +
+			"DROP COLUMN IF EXISTS source_product, DROP COLUMN IF EXISTS source_os, DROP COLUMN IF EXISTS device_json",
+	}},
+	// 4: types are stored as short snake_case names (heart_rate, not HKQuantityTypeIdentifierHeartRate).
+	{run: renameTypes},
 }
 
 func schemaVersion(db *sql.DB) (int, error) {
@@ -91,12 +106,17 @@ func migrate(db *sql.DB) error {
 	}
 	for i := current; i < len(migrations); i++ {
 		version := i + 1
-		for _, stmt := range migrations[i] {
+		for _, stmt := range migrations[i].stmts {
 			if strings.HasPrefix(stmt, "CREATE TABLE") {
 				stmt += tableOptions
 			}
 			if _, err := db.Exec(stmt); err != nil {
 				return fmt.Errorf("migration %d: %w\n%s", version, err, stmt)
+			}
+		}
+		if run := migrations[i].run; run != nil {
+			if err := run(db); err != nil {
+				return fmt.Errorf("migration %d: %w", version, err)
 			}
 		}
 		if _, err := db.Exec("INSERT INTO schema_version VALUES (?, UTC_TIMESTAMP(3))", version); err != nil {

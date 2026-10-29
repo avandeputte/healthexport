@@ -11,11 +11,7 @@ import (
 // Dates are ISO 8601 without fractional seconds; nil optionals are omitted.
 
 type Source struct {
-	Name        string  `json:"name"`
-	BundleID    string  `json:"bundleID"`
-	Version     *string `json:"version"`
-	ProductType *string `json:"productType"`
-	OSVersion   *string `json:"osVersion"`
+	Name string `json:"name"`
 }
 
 type Hello struct {
@@ -36,7 +32,6 @@ type Sample struct {
 	Text     *string           `json:"text"`
 	Count    *int64            `json:"count"`
 	Source   Source            `json:"source"`
-	Device   json.RawMessage   `json:"device"`
 	Metadata map[string]string `json:"metadata"`
 }
 
@@ -48,7 +43,6 @@ type Workout struct {
 	End             time.Time         `json:"end"`
 	Duration        float64           `json:"duration"`
 	Source          Source            `json:"source"`
-	Device          json.RawMessage   `json:"device"`
 	Metadata        map[string]string `json:"metadata"`
 	Statistics      []struct {
 		Type                                       string
