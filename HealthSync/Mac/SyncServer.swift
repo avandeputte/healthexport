@@ -8,7 +8,7 @@ final class SyncServer {
 
     private var listener: NWListener?
     private var active: NWConnection?
-    private let queue = DispatchQueue(label: "HealthSync.server")
+    private let queue: DispatchQueue
     private let onMessage: MessageHandler
     private let onEvent: (Event) -> Void
 
@@ -19,7 +19,9 @@ final class SyncServer {
         case failed(Error)
     }
 
-    init(onMessage: @escaping MessageHandler, onEvent: @escaping (Event) -> Void) {
+    /// `queue` runs every callback, including `onMessage`, `onEvent` and `countForAck`.
+    init(queue: DispatchQueue, onMessage: @escaping MessageHandler, onEvent: @escaping (Event) -> Void) {
+        self.queue = queue
         self.onMessage = onMessage
         self.onEvent = onEvent
     }

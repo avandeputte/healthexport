@@ -2,7 +2,7 @@ import Foundation
 
 /// Applies incoming `SyncMessage`s to SQLite. All inserts are idempotent (keyed on HealthKit UUIDs), so a full
 /// resync over an existing database just refreshes rows rather than duplicating them.
-final class SyncDatabase {
+final class SyncDatabase: @unchecked Sendable { // only used on ReceiverModel.dbQueue once opened
     let db: SQLiteDatabase
     let url: URL
     private(set) var appliedThisSession = 0
