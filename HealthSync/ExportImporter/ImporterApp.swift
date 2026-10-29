@@ -82,8 +82,8 @@ final class ImportModel: ObservableObject {
         }
         // export.xml sits in apple_health_export/ (or a localized folder name), so search a couple of levels down.
         if let e = fm.enumerator(at: dir, includingPropertiesForKeys: nil) {
-            for case let url as URL in e where url.lastPathComponent == "export.xml" {
-                return url
+            while let url = e.nextObject() as? URL {
+                if url.lastPathComponent == "export.xml" { return url }
             }
         }
         throw ImportError.exportXMLNotFound
