@@ -96,8 +96,8 @@ final class SyncDatabase: @unchecked Sendable { // only used on ReceiverModel.db
                     source_name, source_bundle, source_version, source_product, source_os, device_json, metadata_json)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, [s.uuid, s.type, s.kind, iso.string(from: s.start), iso.string(from: s.end), s.value, s.unit, s.text, s.count,
-                      s.source.name, s.source.bundleID, s.source.version, s.source.productType, s.source.osVersion,
-                      json(s.device), json(s.metadata)])
+                      s.source.name, nil, nil, nil, nil,
+                      nil, json(s.metadata)])
             try db.run("DELETE FROM deleted_objects WHERE uuid = ?", [s.uuid])
 
         case .workout(let w):
@@ -106,8 +106,8 @@ final class SyncDatabase: @unchecked Sendable { // only used on ReceiverModel.db
                     source_name, source_bundle, source_version, source_product, source_os, device_json, metadata_json)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, [w.uuid, w.activityType, w.activityTypeRaw, iso.string(from: w.start), iso.string(from: w.end), w.duration,
-                      w.source.name, w.source.bundleID, w.source.version, w.source.productType, w.source.osVersion,
-                      json(w.device), json(w.metadata)])
+                      w.source.name, nil, nil, nil, nil,
+                      nil, json(w.metadata)])
             try db.run("DELETE FROM workout_events WHERE workout_uuid = ?", [w.uuid])
             try db.run("DELETE FROM workout_activities WHERE workout_uuid = ?", [w.uuid])
             for s in w.statistics {
@@ -133,7 +133,7 @@ final class SyncDatabase: @unchecked Sendable { // only used on ReceiverModel.db
                     sampling_frequency_hz, voltage_count, source_name, source_bundle, source_version, device_json, metadata_json)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, [e.uuid, iso.string(from: e.start), iso.string(from: e.end), e.classification, e.symptomsStatus, e.averageHeartRate,
-                      e.samplingFrequency, e.voltageCount, e.source.name, e.source.bundleID, e.source.version, json(e.device), json(e.metadata)])
+                      e.samplingFrequency, e.voltageCount, e.source.name, nil, nil, nil, json(e.metadata)])
 
         case .ecgVoltage(let uuid, let idx, let v):
             try db.run("INSERT OR REPLACE INTO ecg_voltages VALUES (?,?,?)", [uuid, idx, v])

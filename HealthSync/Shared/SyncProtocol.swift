@@ -44,22 +44,13 @@ enum SyncMessage: Codable {
         var text: String?
         var count: Int?
         var source: Source
-        var device: Device?
         var metadata: [String: String]?
     }
 
     struct Source: Codable {
         var name: String
-        var bundleID: String
-        var version: String?
-        var productType: String?
-        var osVersion: String?
     }
 
-    struct Device: Codable {
-        var name: String?, manufacturer: String?, model: String?, hardwareVersion: String?,
-            firmwareVersion: String?, softwareVersion: String?, localIdentifier: String?, udi: String?
-    }
 
     struct Workout: Codable {
         var uuid: String
@@ -69,7 +60,6 @@ enum SyncMessage: Codable {
         var end: Date
         var duration: Double
         var source: Source
-        var device: Device?
         var metadata: [String: String]?
         var statistics: [Statistic]
         var events: [Event]
@@ -97,7 +87,6 @@ enum SyncMessage: Codable {
         var samplingFrequency: Double?
         var voltageCount: Int
         var source: Source
-        var device: Device?
         var metadata: [String: String]?
     }
 

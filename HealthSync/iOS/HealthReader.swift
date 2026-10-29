@@ -122,14 +122,14 @@ final class HealthReader {
                 if let msg = convert(s) { try await emit(.sample(msg)); added += 1 }
             }
             for d in result.deletedObjects {
-                try await emit(.deleted(uuid: d.uuid.uuidString, type: type.identifier)); deleted += 1
+                try await emit(.deleted(uuid: d.uuid.uuidString, type: HealthTypes.storageName(type.identifier))); deleted += 1
             }
             anchor = result.newAnchor
             try await checkpoint()
             saveAnchor(anchor, type.identifier)
             if result.addedSamples.isEmpty && result.deletedObjects.isEmpty { break }
         }
-        try await emit(.typeDone(type: type.identifier, added: added, deleted: deleted))
+        try await emit(.typeDone(type: HealthTypes.storageName(type.identifier), added: added, deleted: deleted))
     }
 
     // MARK: - Workouts and routes
@@ -147,21 +147,21 @@ final class HealthReader {
                 added += 1
             }
             for d in result.deletedObjects {
-                try await emit(.deleted(uuid: d.uuid.uuidString, type: type.identifier)); deleted += 1
+                try await emit(.deleted(uuid: d.uuid.uuidString, type: HealthTypes.storageName(type.identifier))); deleted += 1
             }
             anchor = result.newAnchor
             try await checkpoint()
             saveAnchor(anchor, type.identifier)
             if result.addedSamples.isEmpty && result.deletedObjects.isEmpty { break }
         }
-        try await emit(.typeDone(type: type.identifier, added: added, deleted: deleted))
+        try await emit(.typeDone(type: HealthTypes.storageName(type.identifier), added: added, deleted: deleted))
     }
 
     private func convert(_ w: HKWorkout) -> SyncMessage.Workout {
         var stats: [SyncMessage.Workout.Statistic] = []
         for (qt, st) in w.allStatistics {
             let unit = HealthTypes.defaultUnits[qt.identifier] ?? st.sumQuantity().flatMap(firstCompatibleUnit) ?? st.averageQuantity().flatMap(firstCompatibleUnit) ?? .count()
-            stats.append(.init(type: qt.identifier, unit: unit.unitString,
+            stats.append(.init(type: HealthTypes.storageName(qt.identifier), unit: unit.unitString,
                                average: st.averageQuantity()?.doubleValue(for: unit),
                                minimum: st.minimumQuantity()?.doubleValue(for: unit),
                                maximum: st.maximumQuantity()?.doubleValue(for: unit),
@@ -177,7 +177,7 @@ final class HealthReader {
         }
         return .init(uuid: w.uuid.uuidString, activityType: WorkoutNames.activity(w.workoutActivityType),
                      activityTypeRaw: Int(w.workoutActivityType.rawValue), start: w.startDate, end: w.endDate, duration: w.duration,
-                     source: source(w), device: device(w), metadata: stringify(w.metadata),
+                     source: source(w), metadata: stringify(w.metadata),
                      statistics: stats, events: events, activities: activities)
     }
 
@@ -251,20 +251,12 @@ final class HealthReader {
     // MARK: - Helpers
 
     private func baseSample(_ s: HKSample, kind: String) -> SyncMessage.Sample {
-        .init(uuid: s.uuid.uuidString, type: s.sampleType.identifier, kind: kind, start: s.startDate, end: s.endDate,
-              source: source(s), device: device(s), metadata: stringify(s.metadata))
+        .init(uuid: s.uuid.uuidString, type: HealthTypes.storageName(s.sampleType.identifier), kind: kind, start: s.startDate, end: s.endDate,
+              source: source(s), metadata: stringify(s.metadata))
     }
 
     private func source(_ o: HKObject) -> SyncMessage.Source {
-        let r = o.sourceRevision
-        return .init(name: r.source.name, bundleID: r.source.bundleIdentifier, version: r.version, productType: r.productType,
-                     osVersion: "\(r.operatingSystemVersion.majorVersion).\(r.operatingSystemVersion.minorVersion).\(r.operatingSystemVersion.patchVersion)")
-    }
-
-    private func device(_ o: HKObject) -> SyncMessage.Device? {
-        guard let d = o.device else { return nil }
-        return .init(name: d.name, manufacturer: d.manufacturer, model: d.model, hardwareVersion: d.hardwareVersion,
-                     firmwareVersion: d.firmwareVersion, softwareVersion: d.softwareVersion, localIdentifier: d.localIdentifier, udi: d.udiDeviceIdentifier)
+        .init(name: o.sourceRevision.source.name)
     }
 
     private func stringify(_ metadata: [String: Any]?) -> [String: String]? {

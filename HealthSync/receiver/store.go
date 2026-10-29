@@ -32,7 +32,7 @@ type Session struct {
 func NewSession(db *sql.DB) *Session {
 	s := &Session{db: db, batches: map[string]*batch{}}
 	s.define("samples", "uuid", "type", "kind", "start_date", "end_date", "value", "unit", "text", "count",
-		"source_name", "source_bundle", "source_version", "source_product", "source_os", "device_json", "metadata_json")
+		"source_name", "metadata_json")
 	s.define("workout_route_points", "workout_uuid", "route_uuid", "time", "latitude", "longitude", "altitude",
 		"horizontal_accuracy", "vertical_accuracy", "speed", "course")
 	s.define("heartbeats", "series_uuid", "time_since_start_s", "preceded_by_gap")
@@ -144,8 +144,7 @@ func (s *Session) Apply(m Message) error {
 	case m.Sample != nil:
 		x := m.Sample
 		if err := s.add("samples", x.UUID, x.Type, x.Kind, x.Start.UTC(), x.End.UTC(), x.Value, x.Unit, x.Text, x.Count,
-			x.Source.Name, x.Source.BundleID, x.Source.Version, x.Source.ProductType, x.Source.OSVersion,
-			rawJSON(x.Device), mapJSON(x.Metadata)); err != nil {
+			x.Source.Name, mapJSON(x.Metadata)); err != nil {
 			return err
 		}
 
@@ -202,10 +201,10 @@ func (s *Session) applyWorkout(w *Workout) error {
 		return err
 	}
 	_, err := s.tx.Exec(`REPLACE INTO workouts (uuid, activity_type, activity_type_raw, start_date, end_date, duration_s,
-		source_name, source_bundle, source_version, source_product, source_os, device_json, metadata_json)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		source_name, metadata_json)
+		VALUES (?,?,?,?,?,?,?,?)`,
 		w.UUID, w.ActivityType, w.ActivityTypeRaw, w.Start.UTC(), w.End.UTC(), w.Duration,
-		w.Source.Name, w.Source.BundleID, w.Source.Version, w.Source.ProductType, w.Source.OSVersion, rawJSON(w.Device), mapJSON(w.Metadata))
+		w.Source.Name, mapJSON(w.Metadata))
 	if err != nil {
 		return err
 	}
@@ -280,13 +279,6 @@ func TotalRows(db *sql.DB) (int, error) {
 		total += n
 	}
 	return total, nil
-}
-
-func rawJSON(r json.RawMessage) any {
-	if len(r) == 0 || string(r) == "null" {
-		return nil
-	}
-	return string(r)
 }
 
 func mapJSON(m map[string]string) any {
