@@ -1,74 +1,17 @@
 import SwiftUI
-import UIKit
-
-@MainActor
-final class SyncViewModel: ObservableObject {
-    enum State: Equatable { case idle, authorizing, syncing, done(Int), failed(String) }
-
-    @Published var state: State = .idle
-    @Published var currentType = ""
-    @Published var sentCount = 0
-    @Published var fullResync = false
-    @Published var authorized = UserDefaults.standard.bool(forKey: "authorized")
-
-    private let reader = HealthReader()
-
-    func authorize() async {
-        state = .authorizing
-        do {
-            try await reader.requestAuthorization()
-            authorized = true
-            UserDefaults.standard.set(true, forKey: "authorized")
-            state = .idle
-        } catch {
-            state = .failed(error.localizedDescription)
-        }
-    }
-
-    func sync(to receiver: SyncClient.Receiver, using client: SyncClient) async {
-        state = .syncing
-        sentCount = 0
-        reader.fullResync = fullResync
-        UIApplication.shared.isIdleTimerDisabled = true
-        defer { UIApplication.shared.isIdleTimerDisabled = false }
-        do {
-            let connection = try await client.connect(to: receiver)
-            try await connection.send(.hello(.init(protocolVersion: SyncProtocol.version,
-                                                   deviceName: UIDevice.current.name,
-                                                   systemVersion: UIDevice.current.systemVersion,
-                                                   fullResync: fullResync)))
-            var n = 0
-            try await reader.readAll(progress: { [weak self] label in
-                Task { @MainActor in self?.currentType = label }
-            }, emit: { [weak self] message in
-                try await connection.send(message)
-                n += 1
-                if n % 2_000 == 0 { await MainActor.run { self?.sentCount = n } }
-            })
-            try await connection.send(.done(totalSent: n))
-            try await connection.flush()
-            let acked = try await connection.waitForAck()
-            connection.close()
-            sentCount = n
-            fullResync = false
-            state = .done(acked)
-        } catch {
-            state = .failed(error.localizedDescription)
-        }
-    }
-}
 
 struct ContentView: View {
-    @StateObject private var vm = SyncViewModel()
+    @StateObject private var engine = SyncEngine.shared
     @StateObject private var client = SyncClient()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
             List {
-                if !vm.authorized {
+                if !engine.authorized {
                     Section {
-                        Button("Allow access to Health data") { Task { await vm.authorize() } }
-                            .disabled(vm.state == .authorizing)
+                        Button("Allow access to Health data") { Task { await engine.authorize() } }
+                            .disabled(engine.state == .authorizing)
                     } footer: {
                         Text("Turn on every category on the next screen so the full history can be exported. Nothing leaves your phone except over your own Wi-Fi to the Mac you pick below.")
                     }
@@ -80,16 +23,57 @@ struct ContentView: View {
                     }
                     ForEach(client.receivers) { r in
                         Button {
-                            Task { await vm.sync(to: r, using: client) }
+                            Task { await engine.sync(to: r, trigger: .manual) }
                         } label: {
-                            Label(r.name, systemImage: "desktopcomputer")
+                            HStack {
+                                Label(r.name, systemImage: "desktopcomputer")
+                                if r.name == engine.lastMacName {
+                                    Spacer()
+                                    Image(systemName: "checkmark").foregroundStyle(.secondary)
+                                }
+                            }
                         }
-                        .disabled(!vm.authorized || vm.state == .syncing)
+                        .disabled(!engine.authorized || engine.isRunning)
                     }
                 }
 
                 Section {
-                    Toggle("Send everything again", isOn: $vm.fullResync)
+                    TextField("Mac address, e.g. macbook-2.local or 192.168.1.10:47800", text: $engine.manualAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    Button("Sync to this address") {
+                        Task { await engine.syncToLastMac(trigger: .manual, deadline: nil) }
+                    }
+                    .disabled(!engine.authorized || engine.isRunning || engine.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+                } header: {
+                    Text("Or connect by address")
+                } footer: {
+                    Text("The Mac app shows its address. When this is filled in it's used for every sync instead of discovery, which also works on networks that block Bonjour. Port \(SyncProtocol.defaultPort) is assumed if you leave it out.")
+                }
+
+                Section {
+                    Toggle("Sync automatically", isOn: $engine.autoSync)
+                        .onChange(of: engine.autoSync) { _, on in
+                            if on { BackgroundSync.start(store: engine.reader.store) } else { BackgroundSync.stop(store: engine.reader.store) }
+                        }
+                    if let name = engine.lastMacName {
+                        LabeledContent("Syncs to", value: name)
+                    }
+                    if let date = engine.lastSynced {
+                        LabeledContent("Last synced") {
+                            VStack(alignment: .trailing) {
+                                Text(date, format: .dateTime.day().month().hour().minute())
+                                if let t = engine.lastTrigger { Text(label(for: t)).font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("When on, the app syncs to the last Mac you used as soon as you open it, and iOS also wakes it in the background when new Health data arrives (roughly hourly, only while the phone is unlocked). The Mac app has to be running for that to work; if it isn't, nothing is lost and the next sync catches up.")
+                }
+
+                Section {
+                    Toggle("Send everything again", isOn: $engine.fullResync)
                 } footer: {
                     Text("Normally only new or changed data is sent. Turn this on if you set up a new database on the Mac.")
                 }
@@ -100,19 +84,43 @@ struct ContentView: View {
         }
         .onAppear { client.startBrowsing() }
         .onDisappear { client.stopBrowsing() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { autoSyncOnOpen() }
+        }
+        .task { autoSyncOnOpen() }
+    }
+
+    private func autoSyncOnOpen() {
+        guard engine.autoSync, engine.authorized, engine.hasTarget, !engine.isRunning else { return }
+        if let last = engine.lastSynced, Date().timeIntervalSince(last) < 5 * 60 { return }
+        Task { await engine.syncToLastMac(trigger: .launch, deadline: nil) }
+    }
+
+    private func label(for t: SyncEngine.Trigger) -> String {
+        switch t {
+        case .manual: return "started by you"
+        case .launch: return "on opening the app"
+        case .healthKit: return "in the background (new Health data)"
+        case .backgroundRefresh: return "in the background (refresh)"
+        }
     }
 
     @ViewBuilder private var status: some View {
-        switch vm.state {
+        switch engine.state {
         case .idle: Text("Ready").foregroundStyle(.secondary)
         case .authorizing: Text("Waiting for Health permission…")
         case .syncing:
             VStack(alignment: .leading) {
-                HStack { ProgressView(); Text("Reading \(vm.currentType)…") }
-                Text("\(vm.sentCount.formatted()) items sent").font(.footnote).foregroundStyle(.secondary).monospacedDigit()
+                HStack { ProgressView(); Text("Reading \(engine.currentType)…") }
+                Text("\(engine.sentCount.formatted()) items sent").font(.footnote).foregroundStyle(.secondary).monospacedDigit()
             }
-        case .done(let n): Label("Done. The Mac confirmed \(n.formatted()) items.", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-        case .failed(let m): Label(m, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+        case .done(let n):
+            Label("Done. \(n.formatted()) items sent.", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+        case .paused(let n):
+            Label("Sent \(n.formatted()) items before iOS ended the background window; the rest goes next time.", systemImage: "pause.circle.fill")
+                .foregroundStyle(.orange)
+        case .failed(let m):
+            Label(m, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
         }
     }
 }

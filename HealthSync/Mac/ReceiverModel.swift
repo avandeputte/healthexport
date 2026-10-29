@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Combine
+import ServiceManagement
 
 @MainActor
 final class ReceiverModel: ObservableObject {
@@ -20,6 +21,19 @@ final class ReceiverModel: ObservableObject {
         didSet { UserDefaults.standard.set(databaseURL?.path, forKey: "databasePath") }
     }
     @Published var writeCSVAfterSync = false
+    @Published var lastSync = ""
+    /// What to type into the iPhone app's address field. Refreshed each time the listener comes up.
+    @Published var addresses: [String] = []
+    @Published var launchAtLogin = SMAppService.mainApp.status == .enabled {
+        didSet {
+            do {
+                if launchAtLogin { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            } catch {
+                status = .failed("Couldn't change Open at Login: \(error.localizedDescription)")
+                launchAtLogin = SMAppService.mainApp.status == .enabled
+            }
+        }
+    }
 
     private var database: SyncDatabase?
     private var server: SyncServer?
@@ -56,6 +70,7 @@ final class ReceiverModel: ObservableObject {
             self.database = database
             databaseURL = url
             summary = database.summary()
+            lastSync = database.lastSyncDescription()
             startServer(database)
         } catch {
             // A stale or unwritable path from a previous run shouldn't keep the app stuck on launch.
@@ -73,8 +88,8 @@ final class ReceiverModel: ObservableObject {
                 let name = type.replacingOccurrences(of: "HKQuantityTypeIdentifier", with: "").replacingOccurrences(of: "HKCategoryTypeIdentifier", with: "")
                 Task { @MainActor in self?.currentType = name; self?.received = database.appliedThisSession }
             case .done:
-                let n = database.appliedThisSession, summary = database.summary()
-                Task { @MainActor in self?.finished(received: n, summary: summary) }
+                let n = database.appliedThisSession, summary = database.summary(), last = database.lastSyncDescription()
+                Task { @MainActor in self?.finished(received: n, summary: summary, lastSync: last) }
             default:
                 if database.appliedThisSession % 5_000 == 0 {
                     let n = database.appliedThisSession
@@ -99,7 +114,9 @@ final class ReceiverModel: ObservableObject {
 
     private func handle(_ event: SyncServer.Event) {
         switch event {
-        case .listening(let port): status = .waiting(port: port)
+        case .listening(let port):
+            status = .waiting(port: port)
+            addresses = LocalAddresses.all().map { "\($0):\(port)" }
         case .connected(let peer): status = .receiving(peer: peer); received = 0; currentType = ""
         case .disconnected:
             if case .receiving = status { status = .failed("The iPhone disconnected before finishing. Data received so far was saved; run the sync again.") }
@@ -108,9 +125,10 @@ final class ReceiverModel: ObservableObject {
         }
     }
 
-    private func finished(received: Int, summary: String) {
+    private func finished(received: Int, summary: String, lastSync: String) {
         self.received = received
         self.summary = summary
+        self.lastSync = lastSync
         status = .finished
         if writeCSVAfterSync { exportCSV() }
     }
@@ -130,5 +148,28 @@ final class ReceiverModel: ObservableObject {
 
     func revealDatabase() {
         if let url = databaseURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+    }
+}
+
+/// The Mac's reachable names and IPv4 addresses, hostname first since it survives DHCP changes.
+enum LocalAddresses {
+    static func all() -> [String] {
+        var out: [String] = []
+        let host = ProcessInfo.processInfo.hostName
+        if host.hasSuffix(".local") { out.append(host) }
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return out }
+        defer { freeifaddrs(ifaddr) }
+        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let ifa = ptr.pointee
+            guard ifa.ifa_addr.pointee.sa_family == UInt8(AF_INET), (ifa.ifa_flags & UInt32(IFF_LOOPBACK)) == 0 else { continue }
+            let name = String(cString: ifa.ifa_name)
+            guard name.hasPrefix("en") || name.hasPrefix("bridge") else { continue }
+            var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(ifa.ifa_addr, socklen_t(ifa.ifa_addr.pointee.sa_len), &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
+                out.append(String(cString: buf))
+            }
+        }
+        return out
     }
 }

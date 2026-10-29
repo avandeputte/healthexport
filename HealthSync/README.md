@@ -63,7 +63,17 @@ the `Info.plist` keys listed under `info.properties` in `project.yml` into each 
 4. Wait. A decade of Apple Watch data (several million heart‑rate samples) takes a few minutes; keep the
    iPhone app in the foreground. Both apps show progress.
 
-Running it again later sends only what's new or changed. If you create a fresh database on the Mac, turn on
+Running it again later sends only what's new or changed.
+
+**Automatic syncing.** With "Sync automatically" on (the default), the phone syncs to the last Mac as soon as the
+app is opened, and iOS also wakes it in the background when new Health data arrives (HealthKit background
+delivery, roughly hourly, only while the phone is unlocked) plus an occasional background-refresh slot. The Mac app
+must be running for a background round to succeed; turn on "Open Health Sync at login" on the Mac. A missed round
+costs nothing: anchors only advance for data the Mac confirmed.
+
+**Connecting by address.** The Mac listens on port 47800 and shows its address (`macbook-2.local:47800` or an IP).
+Type it into the phone's "Or connect by address" field to skip Bonjour discovery, which helps on mesh/guest
+networks, VPNs, or if you want to sync over Tailscale from elsewhere. If you create a fresh database on the Mac, turn on
 **Send everything again** on the phone first.
 
 ## What you get

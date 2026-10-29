@@ -180,6 +180,16 @@ final class SyncDatabase: @unchecked Sendable { // only used on ReceiverModel.db
         return tables.reduce(0) { $0 + (Int((try? db.scalar("SELECT COUNT(*) FROM \($1)")) ?? "0") ?? 0) }
     }
 
+    func lastSyncDescription() -> String {
+        var line = "Never"
+        try? db.query("SELECT finished_at, items, device FROM sync_log WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1") { _, v in
+            guard let when = v[0] else { return }
+            let date = ISO8601DateFormatter().date(from: when).map { $0.formatted(date: .abbreviated, time: .shortened) } ?? when
+            line = "\(date), \(Int(v[1] ?? "0")?.formatted() ?? "0") items from \(v[2] ?? "iPhone")"
+        }
+        return line
+    }
+
     func summary() -> String {
         (try? db.summary()) ?? ""
     }

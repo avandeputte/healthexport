@@ -31,11 +31,7 @@ final class SyncClient: ObservableObject {
     func stopBrowsing() { browser?.cancel(); browser = nil }
 
     func connect(to receiver: Receiver) async throws -> Connection {
-        let params = NWParameters.tcp
-        params.includePeerToPeer = true
-        let c = Connection(NWConnection(to: receiver.endpoint, using: params))
-        try await c.open()
-        return c
+        try await Connection.open(to: receiver.endpoint)
     }
 
     /// One open TCP connection. `send` buffers lines and flushes in ~64 KB chunks, waiting for each chunk to be
@@ -47,6 +43,16 @@ final class SyncClient: ObservableObject {
         private let flushThreshold = 64 * 1024
 
         init(_ conn: NWConnection) { self.conn = conn }
+
+        /// Opens a connection to a browsed endpoint or to a Bonjour service by name (`NWEndpoint.service`),
+        /// which lets a background sync reach the last Mac without browsing first.
+        static func open(to endpoint: NWEndpoint) async throws -> Connection {
+            let params = NWParameters.tcp
+            params.includePeerToPeer = true
+            let c = Connection(NWConnection(to: endpoint, using: params))
+            try await c.open()
+            return c
+        }
 
         func open() async throws {
             try await withCheckedThrowingContinuation { (k: CheckedContinuation<Void, Error>) in
@@ -104,5 +110,11 @@ final class SyncClient: ObservableObject {
 
 enum SyncError: LocalizedError {
     case badAck
-    var errorDescription: String? { "The Mac closed the connection without confirming the data." }
+    case outOfTime
+    var errorDescription: String? {
+        switch self {
+        case .badAck: return "The Mac closed the connection without confirming the data."
+        case .outOfTime: return "iOS ended the background window before the sync finished."
+        }
+    }
 }
