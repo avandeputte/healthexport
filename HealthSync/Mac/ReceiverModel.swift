@@ -23,6 +23,7 @@ final class ReceiverModel: ObservableObject {
 
     private var database: SyncDatabase?
     private var server: SyncServer?
+    /// Every use of `database` after it's opened goes through this queue: the SQLite wrapper is single-threaded.
     private let dbQueue = DispatchQueue(label: "HealthSync.db")
 
     init() {
@@ -64,15 +65,16 @@ final class ReceiverModel: ObservableObject {
     }
 
     private func startServer(_ database: SyncDatabase) {
-        let server = SyncServer(onMessage: { [weak self] message in
-            // Runs on the network queue; the DB wrapper is single-threaded, and the network queue is serial, so this is fine.
+        let server = SyncServer(queue: dbQueue, onMessage: { [weak self] message in
+            // Runs on dbQueue, which the server also uses for its network callbacks.
             try database.apply(message)
             switch message {
             case .typeDone(let type, _, _):
                 let name = type.replacingOccurrences(of: "HKQuantityTypeIdentifier", with: "").replacingOccurrences(of: "HKCategoryTypeIdentifier", with: "")
                 Task { @MainActor in self?.currentType = name; self?.received = database.appliedThisSession }
             case .done:
-                Task { @MainActor in self?.finished(database) }
+                let n = database.appliedThisSession, summary = database.summary()
+                Task { @MainActor in self?.finished(received: n, summary: summary) }
             default:
                 if database.appliedThisSession % 5_000 == 0 {
                     let n = database.appliedThisSession
@@ -80,6 +82,10 @@ final class ReceiverModel: ObservableObject {
                 }
             }
         }, onEvent: { [weak self] event in
+            switch event {
+            case .disconnected, .failed: try? database.commit()
+            default: break
+            }
             Task { @MainActor in self?.handle(event) }
         })
         server.countForAck = { database.totalRows() }
@@ -96,17 +102,15 @@ final class ReceiverModel: ObservableObject {
         case .listening(let port): status = .waiting(port: port)
         case .connected(let peer): status = .receiving(peer: peer); received = 0; currentType = ""
         case .disconnected:
-            try? database?.commit()
             if case .receiving = status { status = .failed("The iPhone disconnected before finishing. Data received so far was saved; run the sync again.") }
         case .failed(let e):
-            try? database?.commit()
             status = .failed(e.localizedDescription)
         }
     }
 
-    private func finished(_ database: SyncDatabase) {
-        received = database.appliedThisSession
-        summary = database.summary()
+    private func finished(received: Int, summary: String) {
+        self.received = received
+        self.summary = summary
         status = .finished
         if writeCSVAfterSync { exportCSV() }
     }
@@ -114,11 +118,13 @@ final class ReceiverModel: ObservableObject {
     func exportCSV() {
         guard let database, let url = databaseURL else { return }
         let dir = url.deletingPathExtension().appendingPathExtension("csv")
-        do {
-            try SyncCSVExporter(db: database.db).export(to: dir)
-            NSWorkspace.shared.activateFileViewerSelecting([dir])
-        } catch {
-            status = .failed(error.localizedDescription)
+        dbQueue.async { [weak self] in
+            do {
+                try SyncCSVExporter(db: database.db).export(to: dir)
+                Task { @MainActor in NSWorkspace.shared.activateFileViewerSelecting([dir]) }
+            } catch {
+                Task { @MainActor in self?.status = .failed(error.localizedDescription) }
+            }
         }
     }
 
