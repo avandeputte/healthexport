@@ -1,0 +1,17 @@
+# Same as docker-compose.yml but pulls the prebuilt image from GitHub instead of building locally.
+# For an always-on host: copy this file and .env there, then
+#   docker compose -f docker-compose.ghcr.yml up -d
+# Update later with: docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d
+services:
+  receiver:
+    # latest is built from main; before merging, use the branch tag, e.g. RECEIVER_TAG=health-sync in .env.
+    image: ghcr.io/avandeputte/healthexport-receiver:${RECEIVER_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "47800:47800"
+    healthcheck:
+      test: ["CMD", "/receiver", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

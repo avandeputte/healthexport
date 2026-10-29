@@ -1,0 +1,11 @@
+*.xcodeproj
+xcuserdata/
+DerivedData/
+.build/
+.DS_Store
+*.sqlite
+*.sqlite-journal
+*.csv/
+HealthSync/iOS/Info.plist
+HealthSync/Mac/Info.plist
+HealthSync/ExportImporter/Info.plist

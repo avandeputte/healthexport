@@ -1,0 +1,128 @@
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"log"
+	"strings"
+)
+
+const tableOptions = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+
+// migration is a list of statements, and optionally Go code run after them.
+type migration struct {
+	stmts []string
+	run   func(*sql.DB) error
+}
+
+// migrations are applied in order, once each, and recorded in schema_version. To change the schema, append a new
+// entry; never edit one that has shipped. Timestamps are UTC.
+var migrations = []migration{
+	// 1: the Mac app's SQLite tables (Mac/SyncDatabase.swift), minus ECGs.
+	{stmts: []string{
+		"CREATE TABLE IF NOT EXISTS characteristics (`key` VARCHAR(64) PRIMARY KEY, value TEXT)",
+		`CREATE TABLE IF NOT EXISTS samples (
+			uuid CHAR(36) PRIMARY KEY,
+			type VARCHAR(128) NOT NULL,
+			kind VARCHAR(32) NOT NULL,
+			start_date DATETIME(3) NOT NULL,
+			end_date DATETIME(3) NOT NULL,
+			value DOUBLE, unit VARCHAR(64), text MEDIUMTEXT, count INT,
+			source_name VARCHAR(255), source_bundle VARCHAR(255), source_version VARCHAR(64), source_product VARCHAR(64), source_os VARCHAR(32),
+			device_json JSON, metadata_json JSON,
+			INDEX idx_samples_type_start (type, start_date))`,
+		`CREATE TABLE IF NOT EXISTS workouts (
+			uuid CHAR(36) PRIMARY KEY,
+			activity_type VARCHAR(64), activity_type_raw INT,
+			start_date DATETIME(3), end_date DATETIME(3), duration_s DOUBLE,
+			source_name VARCHAR(255), source_bundle VARCHAR(255), source_version VARCHAR(64), source_product VARCHAR(64), source_os VARCHAR(32),
+			device_json JSON, metadata_json JSON,
+			INDEX idx_workouts_start (start_date))`,
+		`CREATE TABLE IF NOT EXISTS workout_statistics (
+			workout_uuid CHAR(36), type VARCHAR(128), unit VARCHAR(64),
+			average DOUBLE, minimum DOUBLE, maximum DOUBLE, sum DOUBLE, most_recent DOUBLE,
+			PRIMARY KEY (workout_uuid, type))`,
+		`CREATE TABLE IF NOT EXISTS workout_events (
+			workout_uuid CHAR(36), type VARCHAR(64), start_date DATETIME(3), end_date DATETIME(3), metadata_json JSON,
+			INDEX idx_events_workout (workout_uuid))`,
+		`CREATE TABLE IF NOT EXISTS workout_activities (
+			workout_uuid CHAR(36), activity_type VARCHAR(64), start_date DATETIME(3), end_date DATETIME(3), metadata_json JSON,
+			INDEX idx_activities_workout (workout_uuid))`,
+		`CREATE TABLE IF NOT EXISTS workout_route_points (
+			workout_uuid CHAR(36), route_uuid CHAR(36), time DATETIME(3),
+			latitude DOUBLE, longitude DOUBLE, altitude DOUBLE, horizontal_accuracy DOUBLE, vertical_accuracy DOUBLE, speed DOUBLE, course DOUBLE,
+			PRIMARY KEY (route_uuid, time),
+			INDEX idx_route_points_workout (workout_uuid))`,
+		`CREATE TABLE IF NOT EXISTS heartbeats (
+			series_uuid CHAR(36), time_since_start_s DOUBLE, preceded_by_gap BOOL,
+			PRIMARY KEY (series_uuid, time_since_start_s))`,
+		`CREATE TABLE IF NOT EXISTS activity_summaries (
+			date DATE PRIMARY KEY,
+			active_energy_kcal DOUBLE, active_energy_goal_kcal DOUBLE,
+			exercise_min DOUBLE, exercise_goal_min DOUBLE,
+			stand_hours DOUBLE, stand_hours_goal DOUBLE,
+			move_min DOUBLE, move_goal_min DOUBLE)`,
+		"CREATE TABLE IF NOT EXISTS deleted_objects (uuid CHAR(36) PRIMARY KEY, type VARCHAR(128), deleted_at DATETIME(3))",
+		"CREATE TABLE IF NOT EXISTS sync_log (" +
+			"id INT AUTO_INCREMENT PRIMARY KEY, started_at DATETIME(3), finished_at DATETIME(3), " +
+			"device VARCHAR(255), `system` VARCHAR(32), full_resync BOOL, items INT)",
+	}},
+	// 2: HTTP uploads come in numbered batches; remembering the last one makes a retried batch a no-op.
+	{stmts: []string{
+		"ALTER TABLE sync_log ADD COLUMN IF NOT EXISTS last_batch_seq INT NOT NULL DEFAULT 0",
+	}},
+	// 3: the phone only sends the source's name now; drop the columns nobody used.
+	{stmts: []string{
+		"ALTER TABLE samples DROP COLUMN IF EXISTS source_bundle, DROP COLUMN IF EXISTS source_version, " +
+			"DROP COLUMN IF EXISTS source_product, DROP COLUMN IF EXISTS source_os, DROP COLUMN IF EXISTS device_json",
+		"ALTER TABLE workouts DROP COLUMN IF EXISTS source_bundle, DROP COLUMN IF EXISTS source_version, " +
+			"DROP COLUMN IF EXISTS source_product, DROP COLUMN IF EXISTS source_os, DROP COLUMN IF EXISTS device_json",
+	}},
+	// 4: types are stored as short snake_case names (heart_rate, not HKQuantityTypeIdentifierHeartRate).
+	{run: renameTypes},
+}
+
+func schemaVersion(db *sql.DB) (int, error) {
+	var v int
+	err := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&v)
+	return v, err
+}
+
+// createDatabase makes the database if the user is allowed to; if not, it must already exist.
+func createDatabase(db *sql.DB, name string) {
+	q := "CREATE DATABASE IF NOT EXISTS `" + strings.ReplaceAll(name, "`", "``") + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+	if _, err := db.Exec(q); err != nil {
+		log.Printf("couldn't create database %s (fine if it already exists): %v", name, err)
+	}
+}
+
+func migrate(db *sql.DB) error {
+	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS schema_version (version INT PRIMARY KEY, applied_at DATETIME(3) NOT NULL)" + tableOptions); err != nil {
+		return err
+	}
+	var current int
+	if err := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&current); err != nil {
+		return err
+	}
+	for i := current; i < len(migrations); i++ {
+		version := i + 1
+		for _, stmt := range migrations[i].stmts {
+			if strings.HasPrefix(stmt, "CREATE TABLE") {
+				stmt += tableOptions
+			}
+			if _, err := db.Exec(stmt); err != nil {
+				return fmt.Errorf("migration %d: %w\n%s", version, err, stmt)
+			}
+		}
+		if run := migrations[i].run; run != nil {
+			if err := run(db); err != nil {
+				return fmt.Errorf("migration %d: %w", version, err)
+			}
+		}
+		if _, err := db.Exec("INSERT INTO schema_version VALUES (?, UTC_TIMESTAMP(3))", version); err != nil {
+			return err
+		}
+		log.Printf("applied schema migration %d", version)
+	}
+	return nil
+}
