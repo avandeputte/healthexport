@@ -1,0 +1,11 @@
+*.xcodeproj
+xcuserdata/
+DerivedData/
+.build/
+.DS_Store
+*.sqlite
+*.sqlite-journal
+*.csv/
+iOS/Info.plist
+Mac/Info.plist
+ExportImporter/Info.plist
