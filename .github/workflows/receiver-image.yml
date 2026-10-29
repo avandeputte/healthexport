@@ -1,0 +1,67 @@
+name: Receiver image
+
+# Builds the Health Sync receiver and publishes it to GitHub Container Registry as
+# ghcr.io/avandeputte/healthexport-receiver. Tags: `latest` and `main-<sha>` on pushes to main,
+# the version on tags like v1.2.0, and `pr-<n>` (build only, no push) on pull requests.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "HealthSync/receiver/**"
+      - ".github/workflows/receiver-image.yml"
+  pull_request:
+    paths:
+      - "HealthSync/receiver/**"
+      - ".github/workflows/receiver-image.yml"
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/healthexport-receiver
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: HealthSync/receiver/go.mod
+      - name: Test
+        working-directory: HealthSync/receiver
+        run: go test ./...
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=main-,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=ref,event=pr
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: HealthSync/receiver
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

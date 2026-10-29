@@ -50,6 +50,18 @@ curl http://localhost:47800/v1/health      # {"ok":true,"schemaVersion":2}
 It creates the database (if the user may) and its tables on first start; later schema changes are numbered
 migrations recorded in `schema_version` and applied automatically.
 
+### Prebuilt image
+
+Every push to `main` (and every `v*` tag) builds the receiver for amd64 and arm64 and publishes it as
+`ghcr.io/avandeputte/healthexport-receiver:latest` (plus `main-<sha>` and the version tag), via
+`.github/workflows/receiver-image.yml`. On an always-on host you only need `docker-compose.ghcr.yml` and `.env`:
+
+```sh
+docker login ghcr.io       # the repo is private, so use a GitHub token with read:packages
+docker compose -f docker-compose.ghcr.yml up -d
+# later: docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d
+```
+
 ### HTTPS
 
 The container speaks plain HTTP on port 47800; put it behind your reverse proxy for HTTPS. Caddy, which gets a
