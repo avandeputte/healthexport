@@ -79,11 +79,20 @@ final class SyncEngine: ObservableObject {
         guard autoSync, authorized, hasTarget, !isRunning else { return }
         if let last = lastBackgroundAttempt, Date().timeIntervalSince(last) < 10 * 60 { return }
         lastBackgroundAttempt = Date()
-        let app = UIApplication.shared
-        var bgTask = UIBackgroundTaskIdentifier.invalid
-        bgTask = app.beginBackgroundTask(withName: "HealthSync") { app.endBackgroundTask(bgTask) }
+        // iOS calls the expiration handler on the main thread.
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "HealthSync") { [weak self] in
+            MainActor.assumeIsolated { self?.endBackgroundTask() }
+        }
         await syncToLastMac(trigger: trigger, deadline: Date().addingTimeInterval(22))
-        app.endBackgroundTask(bgTask)
+        endBackgroundTask()
+    }
+
+    private var backgroundTask = UIBackgroundTaskIdentifier.invalid
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 
     private func run(macName: String, endpoint: NWEndpoint, trigger: Trigger, deadline: Date?) async {
