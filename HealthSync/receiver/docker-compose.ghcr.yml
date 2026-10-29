@@ -1,15 +1,30 @@
-# Same as docker-compose.yml but pulls the prebuilt image from GitHub instead of building locally.
-# For an always-on host: copy this file and .env there, then
+# Health Sync receiver, every option. Pulls the published image; no checkout needed.
 #   docker compose -f docker-compose.ghcr.yml up -d
-# Update later with: docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d
+#   docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d   # update
+# Values can be set here or in a .env file next to this file (variables in ${...} are read from it).
 services:
   receiver:
-    # latest follows main; set RECEIVER_TAG=1.0.0 (or a branch name) in .env to pin another tag.
-    image: ghcr.io/avandeputte/healthexport-receiver:${RECEIVER_TAG:-latest}
+    image: ghcr.io/avandeputte/healthexport-receiver:${RECEIVER_TAG:-latest}   # or a version such as 1.0.0
+    container_name: health-receiver
     restart: unless-stopped
-    env_file: .env
     ports:
-      - "47800:47800"
+      - "47800:47800"                 # host:container; change the host side if 47800 is taken
+    environment:
+      # --- MariaDB / MySQL (required) ---
+      DB_HOST: ${DB_HOST:?set DB_HOST}   # host name or IP of the database server
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER:-health}
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-health}        # created on first start if the user may; tables are always created/migrated
+      # --- Phone authentication (required) ---
+      SYNC_TOKEN: ${SYNC_TOKEN:?set SYNC_TOKEN}   # at least 16 characters; openssl rand -hex 32
+      # --- Optional ---
+      LISTEN_ADDR: ${LISTEN_ADDR:-:47800}         # address:port inside the container
+      # Serve HTTPS directly instead of behind a reverse proxy: set both and mount the files below.
+      # TLS_CERT_FILE: /certs/fullchain.pem
+      # TLS_KEY_FILE: /certs/privkey.pem
+    # volumes:
+    #   - /path/to/certs:/certs:ro
     healthcheck:
       test: ["CMD", "/receiver", "healthcheck"]
       interval: 30s

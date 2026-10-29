@@ -43,27 +43,54 @@ template; never commit the real file.
 | `DB_NAME` | no | default `health` |
 | `SYNC_TOKEN` | yes | the bearer token the phone must send; make one with `openssl rand -hex 32` |
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | no | set both (and mount the files) to serve HTTPS directly instead of behind a proxy |
+| `LISTEN_ADDR` | no | address the receiver listens on inside the container, default `:47800` |
 
 The container listens on port **47800**.
 
 ### With Docker Compose (recommended)
 
+Save this as `docker-compose.yml` (it's also in the repo as `HealthSync/receiver/docker-compose.ghcr.yml`). Every
+option the receiver understands is listed; the three `:?` ones are required and can also come from a `.env` file
+next to it.
+
+```yaml
+services:
+  receiver:
+    image: ghcr.io/avandeputte/healthexport-receiver:${RECEIVER_TAG:-latest}   # or a version such as 1.0.0
+    container_name: health-receiver
+    restart: unless-stopped
+    ports:
+      - "47800:47800"                 # host:container; change the host side if 47800 is taken
+    environment:
+      # --- MariaDB / MySQL (required) ---
+      DB_HOST: ${DB_HOST:?set DB_HOST}   # host name or IP of the database server
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER:-health}
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-health}        # created on first start if the user may; tables are always created/migrated
+      # --- Phone authentication (required) ---
+      SYNC_TOKEN: ${SYNC_TOKEN:?set SYNC_TOKEN}   # at least 16 characters; openssl rand -hex 32
+      # --- Optional ---
+      LISTEN_ADDR: ${LISTEN_ADDR:-:47800}         # address:port inside the container
+      # Serve HTTPS directly instead of behind a reverse proxy: set both and mount the files below.
+      # TLS_CERT_FILE: /certs/fullchain.pem
+      # TLS_KEY_FILE: /certs/privkey.pem
+    # volumes:
+    #   - /path/to/certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "/receiver", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+```
+
 ```sh
-mkdir health-receiver && cd health-receiver
-curl -O https://raw.githubusercontent.com/avandeputte/healthexport/main/HealthSync/receiver/docker-compose.ghcr.yml
-curl -o .env https://raw.githubusercontent.com/avandeputte/healthexport/main/HealthSync/receiver/.env.example
-# edit .env: DB_HOST, DB_USER, DB_PASSWORD, SYNC_TOKEN
-docker compose -f docker-compose.ghcr.yml up -d
+printf 'DB_HOST=192.168.1.10\nDB_PASSWORD=…\nSYNC_TOKEN=%s\n' "$(openssl rand -hex 32)" > .env
+docker compose up -d
 curl http://localhost:47800/v1/health        # {"ok":true,"schemaVersion":4}
 ```
 
-Update later with:
-
-```sh
-docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d
-```
-
-To pin a version instead of `latest`, put `RECEIVER_TAG=1.0.0` in `.env`.
+Update later with `docker compose pull && docker compose up -d`; pin a version with `RECEIVER_TAG=1.0.0` in `.env`.
 
 ### With plain `docker run`
 
