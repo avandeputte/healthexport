@@ -101,7 +101,7 @@ enum HealthTypes {
         s.insert(HKObjectType.electrocardiogramType())
         s.insert(HKObjectType.audiogramSampleType())
         s.insert(HKObjectType.activitySummaryType())
-        if #available(iOS 16.0, *) { s.insert(HKObjectType.visionPrescriptionType()) }
+        // Vision prescriptions can't be requested here (HealthKit throws); they need per-object authorization.
         return s
     }
 
