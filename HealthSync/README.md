@@ -19,6 +19,7 @@ app reads it and streams it to a Mac app that writes the database.
 | `iOS/` | iPhone app: asks for Health permission, reads every type with anchored queries (so later syncs only send changes), finds the Mac with Bonjour, streams the data |
 | `Mac/` | Mac app: advertises itself, receives the stream, writes SQLite, exports CSV |
 | `Shared/` | the wire format (`SyncProtocol.swift`) and the SQLite wrapper |
+| `receiver/` | alternative to the Mac app: a Docker service that receives the same stream and writes it to MariaDB |
 | `ExportImporter/` | a third, optional Mac app that imports the Health app's `export.zip` instead (handy for a one‑off, or a phone you can't install the companion on) |
 | `project.yml` | [XcodeGen](https://github.com/yonaskolb/XcodeGen) spec that generates the Xcode project with all three targets |
 
@@ -75,6 +76,31 @@ costs nothing: anchors only advance for data the Mac confirmed.
 Type it into the phone's "Or connect by address" field to skip Bonjour discovery, which helps on mesh/guest
 networks, VPNs, or if you want to sync over Tailscale from elsewhere. If you create a fresh database on the Mac, turn on
 **Send everything again** on the phone first.
+
+## Receiving into MariaDB with Docker
+
+`receiver/` replaces the Mac app with a small Go service that listens on TCP port 47800, speaks the same protocol,
+and writes everything to a MariaDB (or MySQL) server you already run. It creates the database if the user may, and
+its tables, on first start; later schema changes are numbered migrations recorded in `schema_version`.
+
+```sh
+cd receiver
+cp .env.example .env      # set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
+docker compose up -d
+docker compose logs -f    # "listening on :47800, writing to …"
+```
+
+On the iPhone, type the Docker host's address into **Or connect by address**, e.g. `192.168.1.168:47800`
+(the port can be left off). Turn on **Send everything again** for the first sync into an empty database.
+Docker can't advertise over Bonjour from inside a container on macOS, so the receiver doesn't show up under
+"Macs on this network"; connecting by address is the way in. Run only one receiver (Mac app or Docker) at a time
+on the same host, since both use port 47800.
+
+Tables match the Mac app's SQLite ones (`samples`, `workouts`, `workout_statistics`, `workout_events`,
+`workout_activities`, `workout_route_points`, `heartbeats`, `activity_summaries`, `characteristics`,
+`deleted_objects`, `sync_log`), all InnoDB/utf8mb4 with UTC `DATETIME(3)` timestamps and JSON columns for device and
+metadata. Every write is an upsert keyed on HealthKit's UUIDs, so resending is safe. A first sync of ~5 million rows
+takes a few minutes.
 
 ## What you get
 

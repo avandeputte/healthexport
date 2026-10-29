@@ -1,0 +1,9 @@
+# Health Sync receiver: the iPhone app uploads to port 47800 and everything is written to your MariaDB server.
+# Put the database settings in .env (copy .env.example), then: docker compose up -d
+services:
+  receiver:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "47800:47800"
