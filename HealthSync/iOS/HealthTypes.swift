@@ -98,7 +98,7 @@ enum HealthTypes {
         s.insert(HKObjectType.workoutType())
         s.insert(HKSeriesType.workoutRoute())
         s.insert(HKSeriesType.heartbeat())
-        s.insert(HKObjectType.electrocardiogramType())
+        // ECGs are deliberately not synced; Alex has no use for them and the voltage traces are the bulk of the data.
         s.insert(HKObjectType.audiogramSampleType())
         s.insert(HKObjectType.activitySummaryType())
         // Vision prescriptions can't be requested here (HealthKit throws); they need per-object authorization.

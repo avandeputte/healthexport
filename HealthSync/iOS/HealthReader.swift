@@ -75,9 +75,6 @@ final class HealthReader {
         progress("Heartbeat series")
         try await syncHeartbeatSeries(emit)
 
-        progress("ECGs")
-        try await syncECGs(emit)
-
         progress("Activity rings")
         try await emitActivitySummaries(emit)
     }
@@ -205,42 +202,6 @@ final class HealthReader {
             }
         }
         defaults.set(now, forKey: sinceKey)
-    }
-
-    // MARK: - ECG
-
-    private func syncECGs(_ emit: (SyncMessage) async throws -> Void) async throws {
-        let type = HKObjectType.electrocardiogramType()
-        var anchor = loadAnchor(type.identifier)
-        var added = 0, deleted = 0
-        while true {
-            let descriptor = HKAnchoredObjectQueryDescriptor(predicates: [.electrocardiogram()], anchor: anchor, limit: 50)
-            let result = try await descriptor.result(for: store)
-            for ecg in result.addedSamples {
-                try await emit(.ecg(.init(uuid: ecg.uuid.uuidString, start: ecg.startDate, end: ecg.endDate,
-                                          classification: ECGNames.classification(ecg.classification),
-                                          symptomsStatus: ECGNames.symptoms(ecg.symptomsStatus),
-                                          averageHeartRate: ecg.averageHeartRate?.doubleValue(for: .count().unitDivided(by: .minute())),
-                                          samplingFrequency: ecg.samplingFrequency?.doubleValue(for: .hertz()),
-                                          voltageCount: ecg.numberOfVoltageMeasurements,
-                                          source: source(ecg), device: device(ecg), metadata: stringify(ecg.metadata))))
-                var index = 0
-                for try await m in HKElectrocardiogramQueryDescriptor(ecg).results(for: store) {
-                    if let v = m.quantity(for: .appleWatchSimilarToLeadI)?.doubleValue(for: .voltUnit(with: .micro)) {
-                        try await emit(.ecgVoltage(ecgUUID: ecg.uuid.uuidString, index: index, microvolts: v))
-                    }
-                    index += 1
-                }
-                added += 1
-            }
-            for d in result.deletedObjects {
-                try await emit(.deleted(uuid: d.uuid.uuidString, type: type.identifier)); deleted += 1
-            }
-            anchor = result.newAnchor
-            saveAnchor(anchor, type.identifier)
-            if result.addedSamples.isEmpty && result.deletedObjects.isEmpty { break }
-        }
-        try await emit(.typeDone(type: type.identifier, added: added, deleted: deleted))
     }
 
     // MARK: - Activity summaries (rings)
