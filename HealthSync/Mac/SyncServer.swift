@@ -1,7 +1,8 @@
 import Foundation
 import Network
 
-/// Listens on a random TCP port, advertises it over Bonjour, and feeds each NDJSON line from the iPhone to `onMessage`.
+/// Listens on a fixed TCP port (so the iPhone can also be given the address by hand), advertises it over Bonjour,
+/// and feeds each NDJSON line from the iPhone to `onMessage`.
 /// One connection at a time; a second phone connecting while one is syncing is refused.
 final class SyncServer {
     typealias MessageHandler = (SyncMessage) throws -> Void
@@ -26,10 +27,10 @@ final class SyncServer {
         self.onEvent = onEvent
     }
 
-    func start(serviceName: String) throws {
+    func start(serviceName: String, port: UInt16 = SyncProtocol.defaultPort) throws {
         let params = NWParameters.tcp
         params.includePeerToPeer = true
-        let l = try NWListener(using: params)
+        let l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port) ?? .any)
         l.service = NWListener.Service(name: serviceName, type: SyncProtocol.bonjourType)
         l.stateUpdateHandler = { [weak self] state in
             switch state {

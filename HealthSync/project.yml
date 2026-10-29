@@ -25,6 +25,7 @@ targets:
       properties:
         com.apple.developer.healthkit: true
         com.apple.developer.healthkit.access: []
+        com.apple.developer.healthkit.background-delivery: true
     info:
       path: iOS/Info.plist
       properties:
@@ -32,6 +33,8 @@ targets:
         NSHealthUpdateUsageDescription: Health Sync never writes to Health.
         NSLocalNetworkUsageDescription: Health Sync looks for the Health Sync app on your Mac over your local network.
         NSBonjourServices: [_healthsync._tcp]
+        UIBackgroundModes: [fetch]
+        BGTaskSchedulerPermittedIdentifiers: [com.avandeputte.healthsync.refresh]
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
     settings:
