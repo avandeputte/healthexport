@@ -104,6 +104,8 @@ final class SyncEngine: ObservableObject {
                     Task { @MainActor in self?.currentType = label }
                 }, emit: { [weak self] message in
                     if let deadline, Date() > deadline { throw SyncError.outOfTime }
+                    // The receiver ignores per-type markers, and each would otherwise cost an upload at the next checkpoint.
+                    if case .typeDone = message { return }
                     try await upload.send(message)
                     if upload.sent % 2_000 == 0 { let n = upload.sent; await MainActor.run { self?.sentCount = n } }
                 })
