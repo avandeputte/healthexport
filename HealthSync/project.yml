@@ -45,13 +45,8 @@ targets:
       - path: Mac
         excludes: ["*.entitlements"]
       - Shared
-    entitlements:
-      path: Mac/HealthSyncMac.entitlements
-      properties:
-        com.apple.security.app-sandbox: true
-        com.apple.security.network.server: true
-        com.apple.security.network.client: true
-        com.apple.security.files.user-selected.read-write: true
+    # Not sandboxed: it's a personal app that writes a database and a CSV folder wherever you point it,
+    # and the sandbox blocked reopening the database on relaunch (no security-scoped bookmark).
     info:
       path: Mac/Info.plist
       properties:
@@ -63,6 +58,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.avandeputte.healthsync.mac
         PRODUCT_NAME: Health Sync
         OTHER_LDFLAGS: -lsqlite3
+        ENABLE_APP_SANDBOX: NO
   HealthExportImporter:
     type: application
     platform: macOS

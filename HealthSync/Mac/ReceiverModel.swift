@@ -57,7 +57,9 @@ final class ReceiverModel: ObservableObject {
             summary = database.summary()
             startServer(database)
         } catch {
-            status = .failed(error.localizedDescription)
+            // A stale or unwritable path from a previous run shouldn't keep the app stuck on launch.
+            if databaseURL == url { databaseURL = nil }
+            status = .failed("Couldn't open \(url.lastPathComponent): \(error.localizedDescription) Click New… to pick another location.")
         }
     }
 

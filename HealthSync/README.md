@@ -47,8 +47,8 @@ In Xcode:
 
 Create a new Xcode project (Multiplatform → App, or one iOS App and one macOS App), delete the generated Swift files,
 and drag in the folders above: the iOS target gets `iOS/` + `Shared/SyncProtocol.swift`, the Mac target gets
-`Mac/` + `Shared/`. Add the HealthKit capability to the iOS target, "Incoming Connections (Server)" and
-"Outgoing Connections (Client)" to the Mac target's App Sandbox, link `libsqlite3.tbd` to the Mac target, and copy
+`Mac/` + `Shared/`. Add the HealthKit capability to the iOS target, turn App Sandbox **off** on the Mac target (it needs to write a
+database and a CSV folder wherever you choose), link `libsqlite3.tbd` to the Mac target, and copy
 the `Info.plist` keys listed under `info.properties` in `project.yml` into each target's Info tab.
 </details>
 
