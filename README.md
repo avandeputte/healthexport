@@ -32,8 +32,8 @@ own tables.
 
 ### Configuration
 
-All settings come from environment variables, usually via a `.env` file. `HealthSync/receiver/.env.example` is the
-template; never commit the real file.
+All settings are environment variables, set in the compose file, with `-e` flags, or from a `.env` file; never commit
+real values.
 
 | variable | required | meaning |
 |---|---|---|
@@ -49,29 +49,28 @@ The container listens on port **47800**.
 
 ### With Docker Compose (recommended)
 
-Save this as `docker-compose.yml` (it's also in the repo as `HealthSync/receiver/docker-compose.ghcr.yml`). Every
-option the receiver understands is listed; the three `:?` ones are required and can also come from a `.env` file
-next to it.
+Save this as `docker-compose.yml`, fill in the values, and run `docker compose up -d`. Every option the receiver
+understands is listed (the same file is in the repo as `HealthSync/receiver/docker-compose.ghcr.yml`):
 
 ```yaml
 services:
   receiver:
-    image: ghcr.io/avandeputte/healthexport-receiver:${RECEIVER_TAG:-latest}   # or a version such as 1.0.0
+    image: ghcr.io/avandeputte/healthexport-receiver:latest   # or a version such as 1.0.0
     container_name: health-receiver
     restart: unless-stopped
     ports:
       - "47800:47800"                 # host:container; change the host side if 47800 is taken
     environment:
       # --- MariaDB / MySQL (required) ---
-      DB_HOST: ${DB_HOST:?set DB_HOST}   # host name or IP of the database server
-      DB_PORT: ${DB_PORT:-3306}
-      DB_USER: ${DB_USER:-health}
-      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
-      DB_NAME: ${DB_NAME:-health}        # created on first start if the user may; tables are always created/migrated
+      DB_HOST: 192.168.1.10           # host name or IP of the database server
+      DB_PORT: "3306"
+      DB_USER: health
+      DB_PASSWORD: change-me
+      DB_NAME: health                 # created on first start if the user may; tables are always created/migrated
       # --- Phone authentication (required) ---
-      SYNC_TOKEN: ${SYNC_TOKEN:?set SYNC_TOKEN}   # at least 16 characters; openssl rand -hex 32
+      SYNC_TOKEN: change-me-to-a-long-random-string   # at least 16 characters; openssl rand -hex 32
       # --- Optional ---
-      LISTEN_ADDR: ${LISTEN_ADDR:-:47800}         # address:port inside the container
+      LISTEN_ADDR: ":47800"           # address:port inside the container
       # Serve HTTPS directly instead of behind a reverse proxy: set both and mount the files below.
       # TLS_CERT_FILE: /certs/fullchain.pem
       # TLS_KEY_FILE: /certs/privkey.pem
@@ -85,21 +84,59 @@ services:
 ```
 
 ```sh
-printf 'DB_HOST=192.168.1.10\nDB_PASSWORD=…\nSYNC_TOKEN=%s\n' "$(openssl rand -hex 32)" > .env
 docker compose up -d
 curl http://localhost:47800/v1/health        # {"ok":true,"schemaVersion":4}
 ```
 
-Update later with `docker compose pull && docker compose up -d`; pin a version with `RECEIVER_TAG=1.0.0` in `.env`.
+Update later with `docker compose pull && docker compose up -d`.
+
+<details>
+<summary>Keeping the secrets in a <code>.env</code> file instead</summary>
+
+If you'd rather not have the password and token inside the compose file, replace the `environment:` block with
+`env_file: .env` and put the settings in a `.env` next to it (`HealthSync/receiver/.env.example` is a template):
+
+```yaml
+services:
+  receiver:
+    image: ghcr.io/avandeputte/healthexport-receiver:latest
+    container_name: health-receiver
+    restart: unless-stopped
+    ports:
+      - "47800:47800"
+    env_file: .env
+    healthcheck:
+      test: ["CMD", "/receiver", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+```
+
+```dotenv
+# .env
+DB_HOST=192.168.1.10
+DB_PORT=3306
+DB_USER=health
+DB_PASSWORD=change-me
+DB_NAME=health
+SYNC_TOKEN=change-me-to-a-long-random-string
+# LISTEN_ADDR=:47800
+# TLS_CERT_FILE=/certs/fullchain.pem
+# TLS_KEY_FILE=/certs/privkey.pem
+```
+</details>
 
 ### With plain `docker run`
 
 ```sh
-docker run -d --name health-receiver --restart unless-stopped \
-  -p 47800:47800 --env-file .env \
+docker run -d --name health-receiver --restart unless-stopped -p 47800:47800 \
+  -e DB_HOST=192.168.1.10 -e DB_USER=health -e DB_PASSWORD=change-me -e DB_NAME=health \
+  -e SYNC_TOKEN=change-me-to-a-long-random-string \
   ghcr.io/avandeputte/healthexport-receiver:latest
 docker logs -f health-receiver
 ```
+
+(or `--env-file .env` instead of the `-e` flags, with the `.env` shown above.)
 
 ### Building it yourself
 
