@@ -31,8 +31,10 @@ targets:
       properties:
         NSHealthShareUsageDescription: Health Sync reads your Health data so it can be copied to your own Mac.
         NSHealthUpdateUsageDescription: Health Sync never writes to Health.
-        NSLocalNetworkUsageDescription: Health Sync looks for the Health Sync app on your Mac over your local network.
-        NSBonjourServices: [_healthsync._tcp]
+        NSLocalNetworkUsageDescription: Health Sync sends your Health data to your own server, which may be on your local network.
+        # https everywhere, except plain http to local addresses (e.g. http://192.168.1.10:47800).
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         UIBackgroundModes: [fetch]
         BGTaskSchedulerPermittedIdentifiers: [com.avandeputte.healthsync.refresh]
         UILaunchScreen: {}

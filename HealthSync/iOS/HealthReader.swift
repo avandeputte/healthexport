@@ -10,6 +10,9 @@ final class HealthReader {
     private let batchSize = 5_000
 
     var fullResync = false
+    /// Called before any anchor is saved; the sync engine uploads everything emitted so far and returns once the
+    /// server has committed it, so an anchor never moves past data the server doesn't have.
+    var checkpoint: () async throws -> Void = {}
 
     func requestAuthorization() async throws {
         guard HKHealthStore.isHealthDataAvailable() else { throw ReaderError.noHealthKit }
@@ -122,6 +125,7 @@ final class HealthReader {
                 try await emit(.deleted(uuid: d.uuid.uuidString, type: type.identifier)); deleted += 1
             }
             anchor = result.newAnchor
+            try await checkpoint()
             saveAnchor(anchor, type.identifier)
             if result.addedSamples.isEmpty && result.deletedObjects.isEmpty { break }
         }
@@ -146,6 +150,7 @@ final class HealthReader {
                 try await emit(.deleted(uuid: d.uuid.uuidString, type: type.identifier)); deleted += 1
             }
             anchor = result.newAnchor
+            try await checkpoint()
             saveAnchor(anchor, type.identifier)
             if result.addedSamples.isEmpty && result.deletedObjects.isEmpty { break }
         }
@@ -214,6 +219,7 @@ final class HealthReader {
                 try await emit(.heartbeat(seriesUUID: series.uuid.uuidString, timeSinceStart: beat.timeIntervalSinceStart, precededByGap: beat.precededByGap))
             }
         }
+        try await checkpoint()
         defaults.set(now, forKey: sinceKey)
     }
 
