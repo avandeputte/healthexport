@@ -32,10 +32,13 @@ enum BackgroundSync {
         scheduleRefresh()
     }
 
-    /// Turns on background delivery and an observer for every sample type we read. Safe to call repeatedly.
+    /// Turns on background delivery and an observer for every sample type that's switched on. Safe to call repeatedly.
     static func start(store: HKHealthStore) {
         guard observers.isEmpty, HKHealthStore.isHealthDataAvailable() else { return }
-        for type in HealthTypes.readTypes.compactMap({ $0 as? HKSampleType }) {
+        let off = TypeSelection.disabled
+        // Routes arrive with their workout, so the workout observer covers them.
+        for type in HealthTypes.readTypes.compactMap({ $0 as? HKSampleType })
+        where !off.contains(type.identifier) && type.identifier != TypeSelection.workoutRoutes {
             // Workouts and sleep are rare and interesting; everything else is fine at Apple's hourly cadence.
             let frequency: HKUpdateFrequency = (type is HKWorkoutType || type.identifier.hasSuffix("SleepAnalysis")) ? .immediate : .hourly
             store.enableBackgroundDelivery(for: type, frequency: frequency) { _, _ in }
@@ -50,6 +53,12 @@ enum BackgroundSync {
             store.execute(query)
             observers.append(query)
         }
+    }
+
+    /// Re-installs the observers after the selection of data types changed.
+    static func restart(store: HKHealthStore) {
+        stop(store: store)
+        start(store: store)
     }
 
     static func stop(store: HKHealthStore) {

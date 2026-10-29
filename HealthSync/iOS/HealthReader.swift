@@ -20,6 +20,8 @@ final class HealthReader {
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("anchor.") {
             defaults.removeObject(forKey: key)
         }
+        // Beat-to-beat data is tracked by date rather than an anchor; without this a full resync skips it.
+        defaults.removeObject(forKey: "heartbeats.since")
     }
 
     // MARK: - Driving the read
@@ -27,12 +29,15 @@ final class HealthReader {
     /// `progress` gets a human readable label; `emit` gets each message, and may suspend to apply backpressure.
     func readAll(progress: @escaping (String) -> Void, emit: @escaping (SyncMessage) async throws -> Void) async throws {
         if fullResync { clearAnchors() }
+        // Types switched off in "Data types" are skipped entirely; their anchors stay where they were.
+        let off = TypeSelection.disabled
 
-        try await emitCharacteristics(emit)
+        if !off.contains(TypeSelection.characteristics) { try await emitCharacteristics(emit) }
 
-        let preferred = (try? await store.preferredUnits(for: Set(HealthTypes.quantityTypes))) ?? [:]
-        for type in HealthTypes.quantityTypes {
-            progress(shortName(type.identifier))
+        let quantityTypes = HealthTypes.quantityTypes.filter { !off.contains($0.identifier) }
+        let preferred = (try? await store.preferredUnits(for: Set(quantityTypes))) ?? [:]
+        for type in quantityTypes {
+            progress(TypeSelection.name(type.identifier))
             try await syncSamples(of: type, emit: emit) { sample in
                 guard let q = sample as? HKQuantitySample else { return nil }
                 let unit = HealthTypes.unit(for: type, preferred: preferred, sample: q)
@@ -44,8 +49,8 @@ final class HealthReader {
             }
         }
 
-        for type in HealthTypes.categoryTypes {
-            progress(shortName(type.identifier))
+        for type in HealthTypes.categoryTypes where !off.contains(type.identifier) {
+            progress(TypeSelection.name(type.identifier))
             try await syncSamples(of: type, emit: emit) { sample in
                 guard let c = sample as? HKCategorySample else { return nil }
                 var s = self.baseSample(c, kind: "category")
@@ -55,28 +60,36 @@ final class HealthReader {
             }
         }
 
-        progress("Audiograms")
-        try await syncSamples(of: HKObjectType.audiogramSampleType(), emit: emit) { sample in
-            guard let a = sample as? HKAudiogramSample else { return nil }
-            var s = self.baseSample(a, kind: "audiogram")
-            s.text = self.json(a.sensitivityPoints.map { p in
-                [
-                    "frequencyHz": p.frequency.doubleValue(for: .hertz()),
-                    "leftDbHL": p.leftEarSensitivity?.doubleValue(for: .decibelHearingLevel()) as Any,
-                    "rightDbHL": p.rightEarSensitivity?.doubleValue(for: .decibelHearingLevel()) as Any,
-                ]
-            })
-            return s
+        if !off.contains(TypeSelection.audiograms) {
+            progress("Audiograms")
+            try await syncSamples(of: HKObjectType.audiogramSampleType(), emit: emit) { sample in
+                guard let a = sample as? HKAudiogramSample else { return nil }
+                var s = self.baseSample(a, kind: "audiogram")
+                s.text = self.json(a.sensitivityPoints.map { p in
+                    [
+                        "frequencyHz": p.frequency.doubleValue(for: .hertz()),
+                        "leftDbHL": p.leftEarSensitivity?.doubleValue(for: .decibelHearingLevel()) as Any,
+                        "rightDbHL": p.rightEarSensitivity?.doubleValue(for: .decibelHearingLevel()) as Any,
+                    ]
+                })
+                return s
+            }
         }
 
-        progress("Workouts")
-        try await syncWorkouts(emit)
+        if !off.contains(TypeSelection.workouts) {
+            progress("Workouts")
+            try await syncWorkouts(emit, routes: !off.contains(TypeSelection.workoutRoutes))
+        }
 
-        progress("Heartbeat series")
-        try await syncHeartbeatSeries(emit)
+        if !off.contains(TypeSelection.heartbeatSeries) {
+            progress("Heartbeat series")
+            try await syncHeartbeatSeries(emit)
+        }
 
-        progress("Activity rings")
-        try await emitActivitySummaries(emit)
+        if !off.contains(TypeSelection.activityRings) {
+            progress("Activity rings")
+            try await emitActivitySummaries(emit)
+        }
     }
 
     // MARK: - Characteristics
@@ -117,7 +130,7 @@ final class HealthReader {
 
     // MARK: - Workouts and routes
 
-    private func syncWorkouts(_ emit: (SyncMessage) async throws -> Void) async throws {
+    private func syncWorkouts(_ emit: (SyncMessage) async throws -> Void, routes: Bool) async throws {
         let type = HKObjectType.workoutType()
         var anchor = loadAnchor(type.identifier)
         var added = 0, deleted = 0
@@ -126,7 +139,7 @@ final class HealthReader {
             let result = try await descriptor.result(for: store)
             for w in result.addedSamples {
                 try await emit(.workout(convert(w)))
-                try await emitRoutes(for: w, emit: emit)
+                if routes { try await emitRoutes(for: w, emit: emit) }
                 added += 1
             }
             for d in result.deletedObjects {
@@ -269,9 +282,6 @@ final class HealthReader {
         (try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
     }
 
-    private func shortName(_ id: String) -> String {
-        id.replacingOccurrences(of: "HKQuantityTypeIdentifier", with: "").replacingOccurrences(of: "HKCategoryTypeIdentifier", with: "")
-    }
 
     private func loadAnchor(_ id: String) -> HKQueryAnchor? {
         guard let data = defaults.data(forKey: "anchor.\(id)") else { return nil }

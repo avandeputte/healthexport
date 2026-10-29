@@ -4,6 +4,7 @@ struct ContentView: View {
     @StateObject private var engine = SyncEngine.shared
     @StateObject private var client = SyncClient()
     @Environment(\.scenePhase) private var scenePhase
+    @State private var enabledTypes = TypeSelection.allIDs.filter(TypeSelection.isEnabled).count
 
     var body: some View {
         NavigationStack {
@@ -70,6 +71,19 @@ struct ContentView: View {
                     }
                 } footer: {
                     Text("When on, the app syncs to the last Mac you used as soon as you open it, and iOS also wakes it in the background when new Health data arrives (roughly hourly, only while the phone is unlocked). The Mac app has to be running for that to work; if it isn't, nothing is lost and the next sync catches up.")
+                }
+
+                Section {
+                    NavigationLink {
+                        DataTypesView(store: engine.reader.store) {
+                            enabledTypes = TypeSelection.allIDs.filter(TypeSelection.isEnabled).count
+                            if engine.autoSync { BackgroundSync.restart(store: engine.reader.store) }
+                        }
+                    } label: {
+                        LabeledContent("Data types", value: "\(enabledTypes) of \(TypeSelection.allIDs.count) on")
+                    }
+                } footer: {
+                    Text("Pick what gets synced. Switching a type off stops sending it; what was already sent stays on the receiver.")
                 }
 
                 Section {
