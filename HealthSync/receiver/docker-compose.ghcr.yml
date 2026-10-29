@@ -1,0 +1,17 @@
+# Same as docker-compose.yml but pulls the prebuilt image from GitHub instead of building locally.
+# For an always-on host: copy this file and .env there, then
+#   docker login ghcr.io          (the repo is private, so log in with a GitHub token that has read:packages)
+#   docker compose -f docker-compose.ghcr.yml up -d
+# Update later with: docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d
+services:
+  receiver:
+    image: ghcr.io/avandeputte/healthexport-receiver:latest
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "47800:47800"
+    healthcheck:
+      test: ["CMD", "/receiver", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
