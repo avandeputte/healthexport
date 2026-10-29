@@ -54,10 +54,9 @@ migrations recorded in `schema_version` and applied automatically.
 
 Every push to `main` (and every `v*` tag) builds the receiver for amd64 and arm64 and publishes it as
 `ghcr.io/avandeputte/healthexport-receiver:latest` (plus `main-<sha>` and the version tag), via
-`.github/workflows/receiver-image.yml`. On an always-on host you only need `docker-compose.ghcr.yml` and `.env`:
+`.github/workflows/receiver-image.yml`. On an always-on host you only need `docker-compose.ghcr.yml` and `.env` (set `RECEIVER_TAG=health-sync` there to run the branch build before it's merged):
 
 ```sh
-docker login ghcr.io       # the repo is private, so use a GitHub token with read:packages
 docker compose -f docker-compose.ghcr.yml up -d
 # later: docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d
 ```
