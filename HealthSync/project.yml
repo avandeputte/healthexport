@@ -11,6 +11,7 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: 69M2JRAT8P
 targets:
   HealthSync:
     type: application
@@ -21,6 +22,9 @@ targets:
       - Shared/SyncProtocol.swift
     entitlements:
       path: iOS/HealthSync.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access: []
     info:
       path: iOS/Info.plist
       properties:
@@ -43,6 +47,11 @@ targets:
       - Shared
     entitlements:
       path: Mac/HealthSyncMac.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.server: true
+        com.apple.security.network.client: true
+        com.apple.security.files.user-selected.read-write: true
     info:
       path: Mac/Info.plist
       properties:

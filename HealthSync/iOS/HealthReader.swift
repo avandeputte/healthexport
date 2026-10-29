@@ -212,7 +212,7 @@ final class HealthReader {
             sortDescriptors: [SortDescriptor(\.startDate)])
         for case let series as HKHeartbeatSeriesSample in try await descriptor.result(for: store) {
             for try await beat in HKHeartbeatSeriesQueryDescriptor(series).results(for: store) {
-                try await emit(.heartbeat(seriesUUID: series.uuid.uuidString, timeSinceStart: beat.timeSinceSeriesStart, precededByGap: beat.precededByGap))
+                try await emit(.heartbeat(seriesUUID: series.uuid.uuidString, timeSinceStart: beat.timeIntervalSinceStart, precededByGap: beat.precededByGap))
             }
         }
         defaults.set(now, forKey: sinceKey)

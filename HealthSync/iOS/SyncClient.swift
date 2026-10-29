@@ -50,13 +50,12 @@ final class SyncClient: ObservableObject {
 
         func open() async throws {
             try await withCheckedThrowingContinuation { (k: CheckedContinuation<Void, Error>) in
-                var resumed = false
-                conn.stateUpdateHandler = { state in
-                    guard !resumed else { return }
+                // Resume once: the handler removes itself before resuming.
+                conn.stateUpdateHandler = { [conn] state in
                     switch state {
-                    case .ready: resumed = true; k.resume()
-                    case .failed(let e): resumed = true; k.resume(throwing: e)
-                    case .cancelled: resumed = true; k.resume(throwing: CancellationError())
+                    case .ready: conn.stateUpdateHandler = nil; k.resume()
+                    case .failed(let e): conn.stateUpdateHandler = nil; k.resume(throwing: e)
+                    case .cancelled: conn.stateUpdateHandler = nil; k.resume(throwing: CancellationError())
                     default: break
                     }
                 }

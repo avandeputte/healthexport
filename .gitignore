@@ -6,6 +6,6 @@ DerivedData/
 *.sqlite
 *.sqlite-journal
 *.csv/
-iOS/Info.plist
-Mac/Info.plist
-ExportImporter/Info.plist
+HealthSync/iOS/Info.plist
+HealthSync/Mac/Info.plist
+HealthSync/ExportImporter/Info.plist
