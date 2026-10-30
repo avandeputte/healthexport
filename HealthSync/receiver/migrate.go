@@ -107,6 +107,11 @@ var migrations = []migration{
 		FROM samples WHERE inserted_at IS NOT NULL
 		GROUP BY DATE(inserted_at), type`,
 	}},
+	// 7: a covering index for the delay views, so they read the index instead of the whole samples table and skip
+	// the rows without inserted_at outright.
+	{stmts: []string{
+		"ALTER TABLE samples ADD INDEX IF NOT EXISTS idx_samples_inserted (inserted_at, type, end_date)",
+	}},
 }
 
 // timestampColumns adds inserted_at/updated_at to the tables. The columns are added without a default first and

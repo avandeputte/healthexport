@@ -85,7 +85,7 @@ services:
 
 ```sh
 docker compose up -d
-curl http://localhost:47800/v1/health        # {"ok":true,"schemaVersion":6}
+curl http://localhost:47800/v1/health        # {"ok":true,"schemaVersion":7}
 ```
 
 Update later with `docker compose pull && docker compose up -d`.
