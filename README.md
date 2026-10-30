@@ -85,7 +85,7 @@ services:
 
 ```sh
 docker compose up -d
-curl http://localhost:47800/v1/health        # {"ok":true,"schemaVersion":4}
+curl http://localhost:47800/v1/health        # {"ok":true,"schemaVersion":5}
 ```
 
 Update later with `docker compose pull && docker compose up -d`.
@@ -224,6 +224,11 @@ All tables are InnoDB/utf8mb4 with timestamps in UTC as `DATETIME(3)`:
 | `characteristics` | date of birth, biological sex, blood type, skin type, wheelchair use |
 | `deleted_objects`, `sync_log`, `schema_version` | bookkeeping |
 
+Every data table also has `inserted_at` (when the receiver first stored the row) and `updated_at` (when its values last
+changed; equal to `inserted_at` until then), both UTC. Resending unchanged data touches neither. The lap, pause and
+multisport rows of a workout are rewritten whenever the workout is resent, so theirs restart then. Rows written
+before these columns existed (receiver schema versions below 5) have `NULL`.
+
 Type names are the HealthKit identifier without its prefix, in snake_case (`HKQuantityTypeIdentifierHeartRateVariabilitySDNN`
 → `heart_rate_variability_sdnn`); the phone and the receiver share the rule (`HealthTypes.storageName`,
 `receiver/typenames.go`). Units are your Health app's preferred units (kg or lb, km or mi…) where Apple exposes them,
@@ -234,6 +239,12 @@ otherwise metric; the `unit` column always says which.
 SELECT DATE(start_date) d, ROUND(AVG(value)) bpm
 FROM samples WHERE type = 'resting_heart_rate'
 GROUP BY d ORDER BY d DESC LIMIT 30;
+
+-- how long after a measurement it reached the database, per type, last 7 days
+SELECT type, ROUND(AVG(TIMESTAMPDIFF(SECOND, end_date, inserted_at)) / 60) avg_lag_min,
+       ROUND(MAX(TIMESTAMPDIFF(SECOND, end_date, inserted_at)) / 60) max_lag_min, COUNT(*) n
+FROM samples WHERE inserted_at > UTC_TIMESTAMP() - INTERVAL 7 DAY
+GROUP BY type ORDER BY avg_lag_min DESC;
 
 -- hours of sleep per night by stage
 SELECT DATE(start_date - INTERVAL 12 HOUR) night, text stage,

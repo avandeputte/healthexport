@@ -184,7 +184,7 @@ func (s *Session) Apply(m Message) error {
 				return err
 			}
 		}
-		if _, err := s.tx.Exec("REPLACE INTO deleted_objects VALUES (?,?,?)", d.UUID, d.Type, time.Now().UTC()); err != nil {
+		if _, err := s.tx.Exec("INSERT INTO deleted_objects (uuid, type, deleted_at) VALUES (?,?,?) ON DUPLICATE KEY UPDATE type=VALUES(type), deleted_at=VALUES(deleted_at)", d.UUID, d.Type, time.Now().UTC()); err != nil {
 			return err
 		}
 
@@ -200,9 +200,13 @@ func (s *Session) applyWorkout(w *Workout) error {
 	if err := s.flushAll(); err != nil {
 		return err
 	}
-	_, err := s.tx.Exec(`REPLACE INTO workouts (uuid, activity_type, activity_type_raw, start_date, end_date, duration_s,
+	// An upsert rather than REPLACE, so inserted_at survives a re-send and updated_at only moves when a value changed.
+	_, err := s.tx.Exec(`INSERT INTO workouts (uuid, activity_type, activity_type_raw, start_date, end_date, duration_s,
 		source_name, metadata_json)
-		VALUES (?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?)
+		ON DUPLICATE KEY UPDATE activity_type=VALUES(activity_type), activity_type_raw=VALUES(activity_type_raw),
+		start_date=VALUES(start_date), end_date=VALUES(end_date), duration_s=VALUES(duration_s),
+		source_name=VALUES(source_name), metadata_json=VALUES(metadata_json)`,
 		w.UUID, w.ActivityType, w.ActivityTypeRaw, w.Start.UTC(), w.End.UTC(), w.Duration,
 		w.Source.Name, mapJSON(w.Metadata))
 	if err != nil {
@@ -214,13 +218,16 @@ func (s *Session) applyWorkout(w *Workout) error {
 		}
 	}
 	for _, st := range w.Statistics {
-		if _, err := s.tx.Exec("REPLACE INTO workout_statistics VALUES (?,?,?,?,?,?,?,?)",
+		if _, err := s.tx.Exec(`INSERT INTO workout_statistics (workout_uuid, type, unit, average, minimum, maximum, sum, most_recent)
+			VALUES (?,?,?,?,?,?,?,?)
+			ON DUPLICATE KEY UPDATE unit=VALUES(unit), average=VALUES(average), minimum=VALUES(minimum), maximum=VALUES(maximum),
+			sum=VALUES(sum), most_recent=VALUES(most_recent)`,
 			w.UUID, st.Type, st.Unit, st.Average, st.Minimum, st.Maximum, st.Sum, st.MostRecent); err != nil {
 			return err
 		}
 	}
 	for _, e := range w.Events {
-		if _, err := s.tx.Exec("INSERT INTO workout_events VALUES (?,?,?,?,?)", w.UUID, e.Type, e.Start.UTC(), e.End.UTC(), mapJSON(e.Metadata)); err != nil {
+		if _, err := s.tx.Exec("INSERT INTO workout_events (workout_uuid, type, start_date, end_date, metadata_json) VALUES (?,?,?,?,?)", w.UUID, e.Type, e.Start.UTC(), e.End.UTC(), mapJSON(e.Metadata)); err != nil {
 			return err
 		}
 	}
@@ -229,7 +236,7 @@ func (s *Session) applyWorkout(w *Workout) error {
 		if a.End != nil {
 			end = a.End.UTC()
 		}
-		if _, err := s.tx.Exec("INSERT INTO workout_activities VALUES (?,?,?,?,?)", w.UUID, a.ActivityType, a.Start.UTC(), end, mapJSON(a.Metadata)); err != nil {
+		if _, err := s.tx.Exec("INSERT INTO workout_activities (workout_uuid, activity_type, start_date, end_date, metadata_json) VALUES (?,?,?,?,?)", w.UUID, a.ActivityType, a.Start.UTC(), end, mapJSON(a.Metadata)); err != nil {
 			return err
 		}
 	}

@@ -9,6 +9,8 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Status") { status }
+
                 if !engine.authorized {
                     Section {
                         Button("Allow access to Health data") { Task { await engine.authorize() } }
@@ -81,7 +83,6 @@ struct ContentView: View {
                     Text("Normally only new or changed data is sent. Turn this on for a new or emptied database on the server.")
                 }
 
-                Section("Status") { status }
             }
             .navigationTitle("Health Sync")
         }

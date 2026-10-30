@@ -80,6 +80,24 @@ var migrations = []migration{
 	}},
 	// 4: types are stored as short snake_case names (heart_rate, not HKQuantityTypeIdentifierHeartRate).
 	{run: renameTypes},
+	// 5: when each row arrived (inserted_at) and when its values last changed (updated_at), so the lag between a
+	// measurement and its upload can be measured. Rows that existed before this migration get NULL: nobody knows.
+	{stmts: timestampColumns(
+		"samples", "workouts", "workout_statistics", "workout_events", "workout_activities", "workout_route_points",
+		"heartbeats", "activity_summaries", "characteristics", "deleted_objects")},
+}
+
+// timestampColumns adds inserted_at/updated_at to the tables. The session time zone is UTC (main.go), so
+// CURRENT_TIMESTAMP is UTC like every other timestamp here.
+func timestampColumns(tables ...string) []string {
+	var stmts []string
+	for _, t := range tables {
+		stmts = append(stmts,
+			"ALTER TABLE "+t+" ADD COLUMN IF NOT EXISTS inserted_at DATETIME(3) NULL DEFAULT CURRENT_TIMESTAMP(3), "+
+				"ADD COLUMN IF NOT EXISTS updated_at DATETIME(3) NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)",
+			"UPDATE "+t+" SET inserted_at = NULL, updated_at = NULL")
+	}
+	return stmts
 }
 
 func schemaVersion(db *sql.DB) (int, error) {
