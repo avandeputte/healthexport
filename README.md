@@ -85,7 +85,7 @@ services:
 
 ```sh
 docker compose up -d
-curl http://localhost:47800/v1/health        # {"ok":true,"schemaVersion":5}
+curl http://localhost:47800/v1/health        # {"ok":true,"schemaVersion":6}
 ```
 
 Update later with `docker compose pull && docker compose up -d`.
@@ -229,6 +229,10 @@ changed; equal to `inserted_at` until then), both UTC. Resending unchanged data 
 multisport rows of a workout are rewritten whenever the workout is resent, so theirs restart then. Rows written
 before these columns existed (receiver schema versions below 5) have `NULL`.
 
+Two views report how long samples take to arrive (`inserted_at` minus the sample's `end_date`, in minutes, which
+includes the Watch-to-iPhone hop): `sample_delay_by_type` (per type: count, min/avg/max delay, latest sample, latest
+arrival) and `sample_delay_by_day` (the same per type and per day of arrival, UTC).
+
 Type names are the HealthKit identifier without its prefix, in snake_case (`HKQuantityTypeIdentifierHeartRateVariabilitySDNN`
 → `heart_rate_variability_sdnn`); the phone and the receiver share the rule (`HealthTypes.storageName`,
 `receiver/typenames.go`). Units are your Health app's preferred units (kg or lb, km or mi…) where Apple exposes them,
@@ -240,11 +244,11 @@ SELECT DATE(start_date) d, ROUND(AVG(value)) bpm
 FROM samples WHERE type = 'resting_heart_rate'
 GROUP BY d ORDER BY d DESC LIMIT 30;
 
--- how long after a measurement it reached the database, per type, last 7 days
-SELECT type, ROUND(AVG(TIMESTAMPDIFF(SECOND, end_date, inserted_at)) / 60) avg_lag_min,
-       ROUND(MAX(TIMESTAMPDIFF(SECOND, end_date, inserted_at)) / 60) max_lag_min, COUNT(*) n
-FROM samples WHERE inserted_at > UTC_TIMESTAMP() - INTERVAL 7 DAY
-GROUP BY type ORDER BY avg_lag_min DESC;
+-- how long after a measurement it reaches the database, slowest types first
+SELECT * FROM sample_delay_by_type ORDER BY avg_delay_min DESC;
+
+-- the same, today only
+SELECT * FROM sample_delay_by_day WHERE day = UTC_DATE() ORDER BY avg_delay_min DESC;
 
 -- hours of sleep per night by stage
 SELECT DATE(start_date - INTERVAL 12 HOUR) night, text stage,

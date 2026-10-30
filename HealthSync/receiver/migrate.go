@@ -85,6 +85,28 @@ var migrations = []migration{
 	{stmts: timestampColumns(
 		"samples", "workouts", "workout_statistics", "workout_events", "workout_activities", "workout_route_points",
 		"heartbeats", "activity_summaries", "characteristics", "deleted_objects")},
+	// 6: views on how long samples take to reach the database (inserted_at minus the sample's end), by type and by
+	// type per day. CREATE OR REPLACE, so a later migration can redefine them.
+	{stmts: []string{
+		`CREATE OR REPLACE VIEW sample_delay_by_type AS
+		SELECT type,
+			COUNT(*) AS samples,
+			ROUND(MIN(TIMESTAMPDIFF(SECOND, end_date, inserted_at)) / 60, 1) AS min_delay_min,
+			ROUND(AVG(TIMESTAMPDIFF(SECOND, end_date, inserted_at)) / 60, 1) AS avg_delay_min,
+			ROUND(MAX(TIMESTAMPDIFF(SECOND, end_date, inserted_at)) / 60, 1) AS max_delay_min,
+			MAX(end_date) AS latest_sample,
+			MAX(inserted_at) AS latest_arrival
+		FROM samples WHERE inserted_at IS NOT NULL
+		GROUP BY type`,
+		`CREATE OR REPLACE VIEW sample_delay_by_day AS
+		SELECT DATE(inserted_at) AS day, type,
+			COUNT(*) AS samples,
+			ROUND(MIN(TIMESTAMPDIFF(SECOND, end_date, inserted_at)) / 60, 1) AS min_delay_min,
+			ROUND(AVG(TIMESTAMPDIFF(SECOND, end_date, inserted_at)) / 60, 1) AS avg_delay_min,
+			ROUND(MAX(TIMESTAMPDIFF(SECOND, end_date, inserted_at)) / 60, 1) AS max_delay_min
+		FROM samples WHERE inserted_at IS NOT NULL
+		GROUP BY DATE(inserted_at), type`,
+	}},
 }
 
 // timestampColumns adds inserted_at/updated_at to the tables. The columns are added without a default first and
