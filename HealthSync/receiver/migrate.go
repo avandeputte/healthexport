@@ -87,15 +87,18 @@ var migrations = []migration{
 		"heartbeats", "activity_summaries", "characteristics", "deleted_objects")},
 }
 
-// timestampColumns adds inserted_at/updated_at to the tables. The session time zone is UTC (main.go), so
+// timestampColumns adds inserted_at/updated_at to the tables. The columns are added without a default first and
+// the defaults set afterwards, so existing rows stay NULL without a row-by-row UPDATE (which on a Galera cluster is
+// one huge replicated transaction, enough to knock a node out). The session time zone is UTC (main.go), so
 // CURRENT_TIMESTAMP is UTC like every other timestamp here.
 func timestampColumns(tables ...string) []string {
 	var stmts []string
 	for _, t := range tables {
 		stmts = append(stmts,
-			"ALTER TABLE "+t+" ADD COLUMN IF NOT EXISTS inserted_at DATETIME(3) NULL DEFAULT CURRENT_TIMESTAMP(3), "+
-				"ADD COLUMN IF NOT EXISTS updated_at DATETIME(3) NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)",
-			"UPDATE "+t+" SET inserted_at = NULL, updated_at = NULL")
+			"ALTER TABLE "+t+" ADD COLUMN IF NOT EXISTS inserted_at DATETIME(3) NULL DEFAULT NULL, "+
+				"ADD COLUMN IF NOT EXISTS updated_at DATETIME(3) NULL DEFAULT NULL",
+			"ALTER TABLE "+t+" MODIFY COLUMN inserted_at DATETIME(3) NULL DEFAULT CURRENT_TIMESTAMP(3), "+
+				"MODIFY COLUMN updated_at DATETIME(3) NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)")
 	}
 	return stmts
 }
