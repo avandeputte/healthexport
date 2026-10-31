@@ -285,8 +285,8 @@ function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt,
   return u;
 }
 
-/* zoomGroup keeps the x axes of several charts together and adds zoom and pan: drag across a chart to zoom into that
-   period, the mouse wheel, Ctrl/⌘ + scroll or a trackpad pinch to zoom, Shift-drag or a sideways swipe to pan, two-finger pinch and
+/* zoomGroup keeps the x axes of several charts together and adds zoom and pan: drag to pan, Shift-drag across a chart to zoom into
+   that period, the mouse wheel, Ctrl/⌘ + scroll or a trackpad pinch to zoom, Shift + scroll or a sideways swipe to pan, two-finger pinch and
    one-finger drag on touch screens, double-click to go back. onView([from, to]) runs once the view settles. */
 function zoomGroup({ home, onView, maxT }) {
   const g = { charts: [], home, syncing: false, timer: null };
@@ -328,13 +328,16 @@ function zoomGroup({ home, onView, maxT }) {
       else if (notch && !e.shiftKey && e.timeStamp > smoothUntil) { e.preventDefault(); g.zoom(e.deltaY > 0 ? 1.25 : 0.8, tAt(e.clientX)); }
       else if (sideways || e.shiftKey) { e.preventDefault(); const [a, b] = g.view(); const d = (sideways ? e.deltaX : e.deltaY) / over.clientWidth * (b - a); g.set(a + d, b + d); }
     }, { passive: false });
+    // Click and drag pans; Shift- or Alt-drag falls through to uPlot's drag-to-zoom selection.
+    over.style.cursor = 'grab';
     over.addEventListener('mousedown', e => {
-      if (!(e.shiftKey || e.altKey) || e.button !== 0) return;
+      if (e.shiftKey || e.altKey || e.button !== 0) return;
       e.stopPropagation(); e.preventDefault();
       const x0 = e.clientX, [a0, b0] = g.view();
+      over.style.cursor = 'grabbing';
       let frame;
       const move = m => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => { const d = -(m.clientX - x0) / over.clientWidth * (b0 - a0); g.set(a0 + d, b0 + d); }); };
-      const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+      const up = () => { over.style.cursor = 'grab'; window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
       window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
     }, true);
     over.addEventListener('dblclick', e => { e.stopPropagation(); g.reset(); }, true);
@@ -369,7 +372,7 @@ function zoomToolbar(g, label) {
     h('span', { class: 'seg' }, btn('−', 'Zoom out', () => g.zoom(2)), btn('+', 'Zoom in', () => g.zoom(0.5))),
     h('span', { class: 'seg' }, btn('◀', 'Earlier', () => g.pan(-0.5)), btn('▶', 'Later', () => g.pan(0.5))),
     btn('Reset', 'Back to the selected range', () => g.reset()), label,
-    h('span', { class: 'muted small hint' }, 'Drag across a chart to zoom in · Shift-drag or swipe sideways to pan · mouse wheel, Ctrl/⌘ + scroll or pinch to zoom · double-click to reset'));
+    h('span', { class: 'muted small hint' }, 'Drag to move · Shift-drag across a chart to zoom in · mouse wheel, Ctrl/⌘ + scroll or pinch to zoom · double-click to reset'));
 }
 
 /* stackedBars draws stacked bars with uPlot by plotting running totals, tallest first, so each bar covers the ones
