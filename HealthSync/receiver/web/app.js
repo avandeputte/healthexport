@@ -1166,6 +1166,9 @@ function makeMap(el) {
   const tiles = window.healthStatus?.tiles || {};
   L.tileLayer(tiles.url || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, attribution: tiles.attribution || '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    // The page's Referrer-Policy is same-origin, which strips the Referer from tile requests; the
+    // OSM tile usage policy requires one and answers 403 without it. Send just our origin.
+    referrerPolicy: 'strict-origin-when-cross-origin',
   }).addTo(map);
   onCleanup(() => map.remove());
   observeWidth(el, () => map.invalidateSize());
