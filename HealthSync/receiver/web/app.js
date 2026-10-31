@@ -286,7 +286,7 @@ function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt,
 }
 
 /* zoomGroup keeps the x axes of several charts together and adds zoom and pan: drag across a chart to zoom into that
-   period, Ctrl/⌘ + scroll or a trackpad pinch to zoom, Shift-drag or a sideways swipe to pan, two-finger pinch and
+   period, the mouse wheel, Ctrl/⌘ + scroll or a trackpad pinch to zoom, Shift-drag or a sideways swipe to pan, two-finger pinch and
    one-finger drag on touch screens, double-click to go back. onView([from, to]) runs once the view settles. */
 function zoomGroup({ home, onView, maxT }) {
   const g = { charts: [], home, syncing: false, timer: null };
@@ -317,9 +317,15 @@ function zoomGroup({ home, onView, maxT }) {
     u.setScale('x', { min: g.home[0], max: g.home[1] });
     const over = u.over;
     const tAt = clientX => { const r = over.getBoundingClientRect(); return u.posToVal(clientX - r.left, 'x'); };
+    // A mouse wheel moves in notches (whole lines, or wheelDelta steps of 120) and zooms without Ctrl; a trackpad
+    // sends a smooth stream, and plain two-finger scrolling over a chart keeps scrolling the page.
+    let smoothUntil = 0;
     over.addEventListener('wheel', e => {
       const sideways = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+      const notch = e.deltaMode !== 0 || (e.wheelDeltaY && e.wheelDeltaY % 120 === 0 && !e.deltaX);
+      if (!notch) smoothUntil = e.timeStamp + 400;
       if (e.ctrlKey || e.metaKey) { e.preventDefault(); g.zoom(Math.exp(e.deltaY * 0.01), tAt(e.clientX)); }
+      else if (notch && !e.shiftKey && e.timeStamp > smoothUntil) { e.preventDefault(); g.zoom(e.deltaY > 0 ? 1.25 : 0.8, tAt(e.clientX)); }
       else if (sideways || e.shiftKey) { e.preventDefault(); const [a, b] = g.view(); const d = (sideways ? e.deltaX : e.deltaY) / over.clientWidth * (b - a); g.set(a + d, b + d); }
     }, { passive: false });
     over.addEventListener('mousedown', e => {
@@ -363,7 +369,7 @@ function zoomToolbar(g, label) {
     h('span', { class: 'seg' }, btn('−', 'Zoom out', () => g.zoom(2)), btn('+', 'Zoom in', () => g.zoom(0.5))),
     h('span', { class: 'seg' }, btn('◀', 'Earlier', () => g.pan(-0.5)), btn('▶', 'Later', () => g.pan(0.5))),
     btn('Reset', 'Back to the selected range', () => g.reset()), label,
-    h('span', { class: 'muted small hint' }, 'Drag across a chart to zoom in · Shift-drag or swipe sideways to pan · Ctrl/⌘ + scroll or pinch to zoom · double-click to reset'));
+    h('span', { class: 'muted small hint' }, 'Drag across a chart to zoom in · Shift-drag or swipe sideways to pan · mouse wheel, Ctrl/⌘ + scroll or pinch to zoom · double-click to reset'));
 }
 
 /* stackedBars draws stacked bars with uPlot by plotting running totals, tallest first, so each bar covers the ones
