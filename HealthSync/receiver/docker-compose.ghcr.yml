@@ -1,4 +1,4 @@
-# Health Sync receiver, every option, with the values written in. Pulls the published image; no checkout needed.
+# Health Sync receiver and web app, every option, with the values written in. Pulls the published image; no checkout needed.
 #   docker compose -f docker-compose.ghcr.yml up -d
 #   docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d   # update
 services:
@@ -17,6 +17,11 @@ services:
       DB_NAME: health                 # created on first start if the user may; tables are always created/migrated
       # --- Phone authentication (required) ---
       SYNC_TOKEN: change-me-to-a-long-random-string   # at least 16 characters; openssl rand -hex 32
+      # --- Web app (optional) ---
+      WEB_PASSWORD: change-me-too     # password for the web app on the same port; unset = no login (LAN only!)
+      TZ: Europe/Brussels             # fallback time zone for days and weeks; the browser normally sends its own
+      # MAP_TILE_URL: https://tile.openstreetmap.org/{z}/{x}/{y}.png   # map tiles for workout routes
+      # MAP_TILE_ATTRIBUTION: "&copy; OpenStreetMap contributors"
       # --- Optional ---
       LISTEN_ADDR: ":47800"           # address:port inside the container
       # Serve HTTPS directly instead of behind a reverse proxy: set both and mount the files below.

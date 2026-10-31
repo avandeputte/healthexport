@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -27,10 +28,11 @@ type Session struct {
 	batches map[string]*batch
 	order   []string
 	Applied int
+	touched touched // hours of sample_hourly to recompute before committing
 }
 
 func NewSession(db *sql.DB) *Session {
-	s := &Session{db: db, batches: map[string]*batch{}}
+	s := &Session{db: db, batches: map[string]*batch{}, touched: touched{}}
 	s.define("samples", "uuid", "type", "kind", "start_date", "end_date", "value", "unit", "text", "count",
 		"source_name", "metadata_json")
 	s.define("workout_route_points", "workout_uuid", "route_uuid", "time", "latitude", "longitude", "altitude",
@@ -87,6 +89,11 @@ func (s *Session) flushBatch(b *batch) error {
 		return fmt.Errorf("insert into %s: %w", b.table, err)
 	}
 	if b.table == "samples" {
+		for _, r := range b.rows {
+			if v, _ := r[5].(*float64); v != nil || r[2] == "category" {
+				s.touched.add(r[1].(string), r[3].(time.Time))
+			}
+		}
 		// A re-added object is no longer deleted.
 		uuids := make([]any, len(b.rows))
 		for i, r := range b.rows {
@@ -118,6 +125,14 @@ func (s *Session) Commit() error {
 	if s.tx == nil {
 		return nil
 	}
+	for typ, spans := range s.touched.hourSpans() {
+		for _, sp := range spans {
+			if err := recomputeHours(s.tx, typ, sp[0], sp[1]); err != nil {
+				return fmt.Errorf("hourly rollup: %w", err)
+			}
+		}
+	}
+	s.touched = touched{}
 	err := s.tx.Commit()
 	s.tx = nil
 	return err
@@ -179,6 +194,13 @@ func (s *Session) Apply(m Message) error {
 			return err
 		}
 		d := m.Deleted
+		var typ string
+		var start time.Time
+		if err := s.tx.QueryRow("SELECT type, start_date FROM samples WHERE uuid = ?", d.UUID).Scan(&typ, &start); err == nil {
+			s.touched.add(typ, start)
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		for _, q := range []string{"DELETE FROM samples WHERE uuid = ?", "DELETE FROM workouts WHERE uuid = ?"} {
 			if _, err := s.tx.Exec(q, d.UUID); err != nil {
 				return err

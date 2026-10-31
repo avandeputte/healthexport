@@ -112,6 +112,18 @@ var migrations = []migration{
 	{stmts: []string{
 		"ALTER TABLE samples ADD INDEX IF NOT EXISTS idx_samples_inserted (inserted_at, type, end_date)",
 	}},
+	// 8: for the web app. sample_hourly holds samples summed per type, UTC hour and source (see rollup.go), so long
+	// charts and records don't scan millions of samples; it is filled in the background, a month at a time, and
+	// sample_hourly_ready lists the types that are complete. web_settings keeps the web app's settings.
+	{stmts: []string{
+		`CREATE TABLE IF NOT EXISTS sample_hourly (
+			type VARCHAR(128) NOT NULL, hour DATETIME NOT NULL, source_name VARCHAR(255) NOT NULL DEFAULT '',
+			sum DOUBLE, n INT NOT NULL, min DOUBLE, max DOUBLE,
+			PRIMARY KEY (type, hour, source_name))`,
+		"CREATE TABLE IF NOT EXISTS sample_hourly_ready (type VARCHAR(128) PRIMARY KEY)",
+		"CREATE TABLE IF NOT EXISTS web_settings (`key` VARCHAR(64) PRIMARY KEY, value MEDIUMTEXT NOT NULL, " +
+			"updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3))",
+	}},
 }
 
 // timestampColumns adds inserted_at/updated_at to the tables. The columns are added without a default first and
