@@ -149,6 +149,7 @@ func registerWeb(mux *http.ServeMux, w *WebAPI, auth *webAuth) {
 	api("GET /api/profile", w.profile)
 	api("GET /api/records", w.records)
 	api("GET /api/records/efforts", w.efforts)
+	api("GET /api/glucose", w.glucose)
 	mux.HandleFunc("/api/", func(rw http.ResponseWriter, r *http.Request) {
 		writeError(rw, http.StatusNotFound, errNotFound)
 	})

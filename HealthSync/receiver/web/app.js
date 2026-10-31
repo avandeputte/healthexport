@@ -42,7 +42,7 @@ function s(tag, attrs, ...children) {
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
 const settings = (() => {
-  const defaults = { units: 'metric', maxHr: '', theme: 'auto' };
+  const defaults = { units: 'metric', maxHr: '', theme: 'auto', glucoseUnit: '', glucoseLow: '70', glucoseHigh: '180' };
   try { return Object.assign(defaults, JSON.parse(localStorage.getItem('healthsync.settings') || '{}')); } catch { return defaults; }
 })();
 function saveSettings() { try { localStorage.setItem('healthsync.settings', JSON.stringify(settings)); } catch { /* private mode */ } }
@@ -159,7 +159,7 @@ const TYPES = {
   height: ['Height', 0], waist_circumference: ['Waist', 1], oxygen_saturation: ['Blood oxygen', 1], respiratory_rate: ['Respiratory rate', 1],
   body_temperature: ['Body temperature', 1], apple_sleeping_wrist_temperature: ['Wrist temperature', 2],
   blood_pressure_systolic: ['Blood pressure (systolic)', 0], blood_pressure_diastolic: ['Blood pressure (diastolic)', 0],
-  blood_glucose: ['Blood glucose', 0], walking_speed: ['Walking speed', 2], walking_step_length: ['Step length', 0],
+  blood_glucose: ['Blood glucose', 0], insulin_delivery: ['Insulin', 1], walking_speed: ['Walking speed', 2], walking_step_length: ['Step length', 0],
   walking_asymmetry_percentage: ['Walking asymmetry', 1], walking_double_support_percentage: ['Double support time', 1],
   apple_walking_steadiness: ['Walking steadiness', 0], six_minute_walk_test_distance: ['Six-minute walk', 0],
   stair_ascent_speed: ['Stair speed up', 2], stair_descent_speed: ['Stair speed down', 2], running_speed: ['Running speed', 2],
@@ -169,20 +169,20 @@ const TYPES = {
   time_in_daylight: ['Time in daylight', 0], environmental_audio_exposure: ['Environmental sound', 0],
   headphone_audio_exposure: ['Headphone audio', 0], sleep_analysis: ['Sleep', 1], mindful_session: ['Mindful minutes', 0],
   apple_stand_hour: ['Stand hours', 0], dietary_energy_consumed: ['Dietary energy', 0], dietary_water: ['Water', 0],
-  dietary_caffeine: ['Caffeine', 0], dietary_protein: ['Protein', 0], number_of_alcoholic_beverages: ['Alcoholic drinks', 0],
+  dietary_caffeine: ['Caffeine', 0], dietary_carbohydrates: ['Carbohydrates', 0], dietary_sugar: ['Sugar', 0], dietary_fiber: ['Fiber', 0], dietary_protein: ['Protein', 0], number_of_alcoholic_beverages: ['Alcoholic drinks', 0],
   uv_exposure: ['UV index', 0], swimming_stroke_count: ['Swimming strokes', 0], push_count: ['Wheelchair pushes', 0],
   underwater_depth: ['Underwater depth', 1], water_temperature: ['Water temperature', 1], workout_effort_score: ['Workout effort', 1],
   atrial_fibrillation_burden: ['AFib history', 1], electrodermal_activity: ['Electrodermal activity', 2],
 };
 const typeLabel = t => TYPES[t]?.[0] || t.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
-const typeDec = t => TYPES[t]?.[1] ?? 1;
+const typeDec = (t, unit) => /^mmol/i.test(unit || '') ? 1 : TYPES[t]?.[1] ?? 1;
 const PRETTY_UNITS = { 'count/min': 'bpm', count: '', degC: '°C', degF: '°F', dBASPL: 'dB', 'mL/kg·min': 'mL/kg/min', 'mL/min·kg': 'mL/kg/min', 'ml/(kg*min)': 'mL/kg/min',
   'mL/(kg·min)': 'mL/kg/min', 'kcal/hr·kg': 'kcal/h/kg', 'kcal/(kg*hr)': 'kcal/h/kg', mmHg: 'mmHg', 'mg/dL': 'mg/dL', 'm/s': 'm/s' };
-const prettyUnit = u => u == null ? '' : (u in PRETTY_UNITS ? PRETTY_UNITS[u] : u);
+const prettyUnit = u => u == null ? '' : /^mmol</i.test(u) ? 'mmol/L' : (u in PRETTY_UNITS ? PRETTY_UNITS[u] : u);
 // HealthKit percentages are fractions; show them out of 100.
 const scaleFor = unit => unit === '%' ? 100 : 1;
 
-const COMMON_TYPES = ['step_count', 'active_energy_burned', 'apple_exercise_time', 'distance_walking_running', 'flights_climbed',
+const COMMON_TYPES = ['blood_glucose', 'step_count', 'active_energy_burned', 'apple_exercise_time', 'distance_walking_running', 'flights_climbed',
   'heart_rate', 'resting_heart_rate', 'heart_rate_variability_sdnn', 'walking_heart_rate_average', 'vo2_max', 'body_mass',
   'body_fat_percentage', 'oxygen_saturation', 'respiratory_rate', 'apple_sleeping_wrist_temperature', 'time_in_daylight',
   'walking_speed', 'running_power'];
@@ -230,10 +230,10 @@ function observeWidth(el, f) {
 
 /* chart draws a uPlot time series.
    series: [{label, color, unit, dec, bars, scale, values, fill, dash, points, value(fmt)}]; data = [xs, ...values]. */
-function chart(el, { xs, series, height = 240, sync, xTime = true, xFmt, bands, legend = true, yRange, hooks, axisFmt, incrs }) {
+function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt, xIncrs, bands, legend = true, yRange, hooks, axisFmt, incrs }) {
   const muted = cssVar('--muted'), line = cssVar('--line');
-  const scales = { x: { time: xTime } };
-  const axes = [{ stroke: muted, grid: { stroke: line, width: 1 }, ticks: { stroke: line }, values: xFmt }];
+  const scales = { x: { time: xTime, range: xRange ? () => xRange : undefined } };
+  const axes = [{ stroke: muted, grid: { stroke: line, width: 1 }, ticks: { stroke: line }, values: xFmt, incrs: xIncrs }];
   const useries = [{ label: xTime ? 'Time' : '', value: xTime ? (u, v) => v == null ? '' : fmtDateTime(v) : (u, v) => v == null ? '' : (xFmt ? xFmt(u, [v])[0] : v) }];
   const seen = [];
   for (const sr of series) {
@@ -250,7 +250,7 @@ function chart(el, { xs, series, height = 240, sync, xTime = true, xFmt, bands, 
     }
     useries.push({
       label: sr.label, stroke: sr.color, scale: sc, width: sr.bars ? 0 : (sr.width ?? 2), dash: sr.dash,
-      fill: sr.bars ? sr.color : sr.fill, spanGaps: sr.spanGaps ?? true, show: sr.show ?? true,
+      fill: sr.bars ? (sr.fill || sr.color) : sr.fill, spanGaps: sr.spanGaps ?? true, show: sr.show ?? true,
       paths: sr.bars ? uPlot.paths.bars({ size: [0.75, 48], align: 1 }) : sr.stepped ? uPlot.paths.stepped({ align: 1 }) : undefined,
       points: { show: sr.points ?? false, size: 5, fill: sr.color },
       value: sr.value || ((u, v) => v == null ? '—' : fmtNum(v, sr.dec ?? 1) + (sr.unit ? ' ' + sr.unit : '')),
@@ -393,7 +393,8 @@ pages.dashboard = async (main) => {
   const kpis = h('div', { class: 'grid kpis' });
   const workoutsCard = card('Recent workouts');
   const weeklyCard = card('Training volume, last 12 weeks');
-  main.append(h('h1', {}, 'Dashboard'), top, h('div', { style: { height: '16px' } }), kpis, h('div', { class: 'grid cols-2' }, workoutsCard, weeklyCard));
+  const glucoseCard = types.blood_glucose ? card('Blood glucose, last 14 days') : null;
+  main.append(h('h1', {}, 'Dashboard'), top, glucoseCard, h('div', { style: { height: '16px' } }), kpis, h('div', { class: 'grid cols-2' }, workoutsCard, weeklyCard));
 
   // Rings: today big, the week small.
   api('activity', { from: daysAgo(6), to: today() }).then(days => {
@@ -413,6 +414,17 @@ pages.dashboard = async (main) => {
       row), h('p', { class: 'small muted' }, t.date === today() ? 'Today' : 'Latest day: ' + t.date));
   }).catch(e => ringsCard.append(h('p', { class: 'error' }, e.message)));
 
+  if (glucoseCard) api('glucose', { from: daysAgo(13), to: today(), low: settings.glucoseLow || 70, high: settings.glucoseHigh || 180 }).then(g => {
+    if (!settings.glucoseUnit) settings.glucoseUnit = g.recordedUnit;
+    const st = g.stats;
+    if (!st.readings) { glucoseCard.append(empty('No readings in the last 14 days.')); return; }
+    const last = g.readings[g.readings.length - 1];
+    glucoseCard.append(h('div', { class: 'stats' }, stat('Latest', fmtG(last[1]), gUnit()), stat('Average', fmtG(st.mean), gUnit()),
+      stat('Time in range', pct(st.ranges.inRange)), stat('Below range', pct(st.ranges.low + st.ranges.veryLow)), stat('GMI', fmtNum(st.gmi, 1), '%'), stat('CV', fmtNum(st.cv, 1), '%')),
+    h('div', { style: { marginTop: '12px' } }, rangeBar(st.ranges, 14)), rangeLegend(st.ranges, g.target),
+    h('p', { class: 'small muted' }, 'Latest reading ', fmtAgo(last[0]), ' · ', h('a', { href: '#/glucose' }, 'Glucose details →')));
+  }).catch(e => glucoseCard.append(h('p', { class: 'error' }, e.message)));
+
   // Sleep
   api('sleep', { from: daysAgo(14), to: today() }).then(nights => {
     if (!nights.length) { sleepCard.append(empty('No sleep data in the last two weeks.')); return; }
@@ -430,7 +442,7 @@ pages.dashboard = async (main) => {
   if (!shown.length) kpis.append(card(null, empty('No samples yet. Sync from the iPhone app and they show up here.')));
   for (const t of shown) {
     const info = types[t];
-    const el = h('section', { class: 'card kpi', onclick: () => location.hash = '#/metrics?types=' + t + '&range=90d' },
+    const el = h('section', { class: 'card kpi', onclick: () => location.hash = t === 'blood_glucose' ? '#/glucose' : '#/metrics?types=' + t + '&range=90d' },
       h('div', { class: 'label' }, typeLabel(t)), h('div', { class: 'value' }, '…'));
     kpis.append(el);
     api('series', { type: t, from: daysAgo(59), to: today(), bucket: 'day' }).then(sr => {
@@ -446,7 +458,8 @@ pages.dashboard = async (main) => {
       const delta = recent != null && before ? (recent - before) / Math.abs(before) * 100 : null;
       const lowerIsBetter = ['resting_heart_rate', 'walking_heart_rate_average', 'respiratory_rate'].includes(t);
       const cls = delta == null || Math.abs(delta) < 2 ? 'flat' : (delta > 0) !== lowerIsBetter ? 'up' : 'down';
-      el.querySelector('.value').replaceChildren(fmtNum(headline, typeDec(t)), h('small', {}, unit));
+      const dec = t === 'blood_glucose' && /^mmol/i.test(sr.unit) ? 1 : typeDec(t);
+      el.querySelector('.value').replaceChildren(fmtNum(headline, dec), h('small', {}, unit));
       el.append(h('div', { class: 'sub' }, info.cumulative ? 'today' : (isoDate(new Date(last.t * 1000)) === today() ? 'today' : fmtDateShort(last.t)),
         ' · 7-day avg ', fmtNum(recent, typeDec(t)), delta != null ? h('span', { class: cls }, ` ${delta > 0 ? '▲' : '▼'} ${fmtNum(Math.abs(delta), 0)}%`) : null),
       sparkline(vals, { bars: info.cumulative }));
@@ -511,7 +524,7 @@ function workoutTable(ws, { compact = false } = {}) {
 
 // ---------- metrics explorer ----------
 
-const RANGES = [['7d', '7 days', 7], ['30d', '30 days', 30], ['90d', '90 days', 90], ['1y', '1 year', 365], ['2y', '2 years', 730], ['5y', '5 years', 1826], ['all', 'All', 0]];
+const RANGES = [['today', 'Today', 1], ['yesterday', 'Yesterday', 1], ['7d', '7 days', 7], ['30d', '30 days', 30], ['90d', '90 days', 90], ['1y', '1 year', 365], ['2y', '2 years', 730], ['5y', '5 years', 1826], ['all', 'All', 0]];
 
 pages.metrics = async (main, _, params) => {
   const types = await typeList();
@@ -571,10 +584,14 @@ pages.metrics = async (main, _, params) => {
     loading(out);
     let from, to = today();
     if (state.range === 'custom') { from = state.from || daysAgo(90); to = state.to || today(); }
+    else if (state.range === 'today') from = today();
+    else if (state.range === 'yesterday') from = to = daysAgo(1);
     else if (state.range === 'all') {
       const first = Math.min(...state.types.map(t => types[t].first));
       from = isoDate(new Date(first * 1000));
     } else from = daysAgo(RANGES.find(r => r[0] === state.range)[2] - 1);
+    const xRange = [new Date(from + 'T00:00').getTime() / 1000, new Date(to + 'T00:00').getTime() / 1000 + DAY];
+    const spanDays = (xRange[1] - xRange[0]) / DAY;
     let results;
     try {
       results = await Promise.all(state.types.map(t => api('series', { type: t, from, to, bucket: state.bucket })));
@@ -591,8 +608,8 @@ pages.metrics = async (main, _, params) => {
       const joined = tables.length > 1 ? uPlot.join(tables) : tables[0];
       const el = h('div', { class: 'chart' });
       out.append(card(`${defs.map(d => typeLabel(d.t)).join(' · ')}`, el, h('p', { class: 'small muted' }, `Grouped by ${bucketLabel}. Each unit has its own axis.`)));
-      chart(el, { xs: joined[0], height: 420, series: defs.map((d, j) => ({
-        label: typeLabel(d.t), color: d.color, unit: d.unit, dec: typeDec(d.t), scale: d.unit || d.t, values: joined[j + 1],
+      chart(el, { xs: joined[0], height: 420, xRange, series: defs.map((d, j) => ({
+        label: typeLabel(d.t), color: d.color, unit: d.unit, dec: typeDec(d.t, d.r.unit), scale: d.unit || d.t, values: joined[j + 1],
         bars: false, points: d.r.points.length < 60, fill: d.bars ? d.color + '22' : undefined, stepped: d.bars && defs.length === 1,
       })) });
     } else {
@@ -602,14 +619,15 @@ pages.metrics = async (main, _, params) => {
         out.append(card(null, h('div', { class: 'row spread' }, h('h2', { style: { color: d.color } }, typeLabel(d.t)), h('span', { class: 'muted small' }, `${d.unit || 'count'} · ${d.r.bucket}${d.r.cumulative ? ' totals' : ' averages'}`)), el));
         if (!pts.length) { el.append(empty('No data in this range.')); continue; }
         const xs = pts.map(p => p.t), ys = pts.map(p => p.v * d.k);
-        const series = [{ label: typeLabel(d.t), color: d.color, unit: d.unit, dec: typeDec(d.t), values: ys, bars: d.bars, points: !d.bars && pts.length < 90 }];
+        const dec = typeDec(d.t, d.r.unit);
+        const series = [{ label: typeLabel(d.t), color: d.color, unit: d.unit, dec, values: ys, bars: d.bars, points: !d.bars && pts.length < 90 }];
         let bands;
         if (state.band && !d.r.cumulative && pts.some(p => p.min != null && p.n > 1)) {
-          series.push({ label: 'max', color: d.color + '55', width: 1, unit: d.unit, dec: typeDec(d.t), values: pts.map(p => p.max != null ? p.max * d.k : null) });
-          series.push({ label: 'min', color: d.color + '55', width: 1, unit: d.unit, dec: typeDec(d.t), values: pts.map(p => p.min != null ? p.min * d.k : null) });
+          series.push({ label: 'max', color: d.color + '55', width: 1, unit: d.unit, dec, values: pts.map(p => p.max != null ? p.max * d.k : null) });
+          series.push({ label: 'min', color: d.color + '55', width: 1, unit: d.unit, dec, values: pts.map(p => p.min != null ? p.min * d.k : null) });
           bands = [{ series: [2, 3], fill: d.color + '1f' }];
         }
-        chart(el, { xs, series, bands, height: defs.length > 2 ? 200 : 260, sync: 'metrics' });
+        chart(el, { xs, series, bands, xRange, height: defs.length > 2 ? 200 : 260, sync: 'metrics' });
       }
     }
     // Summary table
@@ -619,8 +637,8 @@ pages.metrics = async (main, _, params) => {
       if (!vals.length) { tb.append(h('tr', {}, h('td', {}, typeLabel(d.t)), h('td', { colspan: 6, class: 'muted' }, 'no data'))); continue; }
       const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
       const mn = Math.min(...pts.map(p => (p.min ?? p.v) * d.k)), mx = Math.max(...pts.map(p => (p.max ?? p.v) * d.k));
-      const slope = slopePerDay(pts.map((p, i) => [p.t, vals[i]]));
-      const dec = typeDec(d.t);
+      const slope = spanDays >= 14 ? slopePerDay(pts.map((p, i) => [p.t, vals[i]])) : null;
+      const dec = typeDec(d.t, d.r.unit);
       tb.append(h('tr', {}, h('td', {}, h('span', { class: 'dot', style: { background: d.color, display: 'inline-block', width: '9px', height: '9px', borderRadius: '50%', marginRight: '6px' } }), typeLabel(d.t)),
         h('td', { class: 'r num' }, fmtNum(avg, dec), ' ', d.unit), h('td', { class: 'r num' }, fmtNum(mn, dec)), h('td', { class: 'r num' }, fmtNum(mx, dec)),
         h('td', { class: 'r num' }, d.r.cumulative ? fmtNum(vals.reduce((a, b) => a + b, 0), dec) : '—'),
@@ -1085,6 +1103,155 @@ function hypnogram(n) {
   return svg;
 }
 
+// ---------- blood glucose ----------
+
+const GLUCOSE_BANDS = [['veryLow', 'Very low', '#991b1b'], ['low', 'Low', '#ef4444'], ['inRange', 'In range', '#16a34a'], ['high', 'High', '#f59e0b'], ['veryHigh', 'Very high', '#c2410c']];
+const GLUCOSE_OVERLAYS = ['heart_rate', 'step_count', 'active_energy_burned', 'dietary_carbohydrates', 'insulin_delivery', 'apple_exercise_time',
+  'heart_rate_variability_sdnn', 'respiratory_rate', 'body_mass'];
+const mmol = () => settings.glucoseUnit === 'mmol/L';
+const gUnit = () => mmol() ? 'mmol/L' : 'mg/dL';
+const gVal = v => v == null ? null : mmol() ? v / 18.0182 : v;
+const fmtG = v => v == null || !isFinite(v) ? '—' : fmtNum(gVal(v), mmol() ? 1 : 0);
+const pct = f => fmtNum((f || 0) * 100, 0) + '%';
+
+function rangeBar(r, height = 22) {
+  const bar = h('div', { style: { display: 'flex', height: height + 'px', borderRadius: '6px', overflow: 'hidden', background: cssVar('--line') } });
+  for (const [k, label, color] of GLUCOSE_BANDS) if (r[k] > 0) bar.append(h('div', { title: `${label}: ${pct(r[k])}`, style: { width: r[k] * 100 + '%', background: color } }));
+  return bar;
+}
+function rangeLegend(r, target) {
+  const lo = fmtG(target[0]), hi = fmtG(target[1]);
+  const labels = { veryLow: `< ${fmtG(54)}`, low: `${fmtG(54)}–${lo}`, inRange: `${lo}–${hi}`, high: `${hi}–${fmtG(250)}`, veryHigh: `> ${fmtG(250)}` };
+  return h('div', { class: 'legend' }, GLUCOSE_BANDS.map(([k, label, color]) => h('span', {}, h('i', { style: { background: color } }), `${label} ${labels[k]}: `, h('b', {}, pct(r[k])))));
+}
+
+// Shades the target range (and optionally workouts) behind a chart whose glucose scale is 'g'.
+function glucoseBackdrop(target, workouts = []) {
+  return u => {
+    const ctx = u.ctx, { left, top, width, height } = u.bbox;
+    ctx.save();
+    const y1 = u.valToPos(gVal(target[1]), 'g', true), y2 = u.valToPos(gVal(target[0]), 'g', true);
+    ctx.fillStyle = 'rgba(22,163,74,0.10)';
+    ctx.fillRect(left, Math.max(top, y1), width, Math.min(top + height, y2) - Math.max(top, y1));
+    ctx.fillStyle = 'rgba(249,115,22,0.13)';
+    for (const w of workouts) {
+      const x1 = u.valToPos(w.start, 'x', true), x2 = u.valToPos(w.end, 'x', true);
+      if (x2 < left || x1 > left + width) continue;
+      ctx.fillRect(Math.max(left, x1), top, Math.min(left + width, x2) - Math.max(left, x1), height);
+    }
+    ctx.restore();
+  };
+}
+
+pages.glucose = async (main, _, params) => {
+  const types = await typeList();
+  const state = { range: params.get('range') || '14', overlays: (params.get('with') || '').split(',').filter(Boolean), workouts: params.get('workouts') !== '0' };
+  if (!types.blood_glucose) {
+    main.replaceChildren(h('h1', {}, 'Blood glucose'), card(null, empty('No blood glucose readings yet. Turn on Blood Glucose under Data types in the iPhone app (CGM apps such as Dexcom, Libre or a meter app write it to Health), then sync.')));
+    return;
+  }
+  const body = h('div');
+  const overlayChips = h('div', { class: 'row' });
+  const unitSeg = h('span');
+  main.replaceChildren(h('h1', {}, 'Blood glucose'),
+    h('div', { class: 'toolbar' },
+      seg([['1', '24 hours'], ['3', '3 days'], ['7', '7 days'], ['14', '14 days'], ['30', '30 days'], ['90', '90 days'], ['365', '1 year']], state.range, v => { state.range = v; draw(); }),
+      unitSeg),
+    body);
+  async function draw() {
+    resetPage();
+    setParams(Object.fromEntries(Object.entries({ range: state.range, with: state.overlays.join(','), workouts: state.workouts ? '' : '0' }).filter(([, v]) => v)));
+    loading(body);
+    const days = +state.range;
+    const from = days === 1 ? String(Math.floor(Date.now() / 1000) - DAY) : daysAgo(days - 1);
+    const target = [+settings.glucoseLow || 70, +settings.glucoseHigh || 180];
+    const [g, ws] = await Promise.all([api('glucose', { from, to: today(), low: target[0], high: target[1] }), api('workouts', { from: daysAgo(days), to: today() })]);
+    if (!settings.glucoseUnit) settings.glucoseUnit = g.recordedUnit;
+    unitSeg.replaceChildren(seg([['mg/dL', 'mg/dL'], ['mmol/L', 'mmol/L']], gUnit(), v => { settings.glucoseUnit = v; saveSettings(); draw(); }));
+    const st = g.stats;
+    if (!st.readings) { body.replaceChildren(card(null, empty('No readings in this period.'))); return; }
+    const cgm = st.perDay > 50;
+
+    const statsCard = card(null, h('div', { class: 'stats' },
+      stat('Average', fmtG(st.mean), gUnit()), stat('GMI (est. A1c)', fmtNum(st.gmi, 1), '%'),
+      stat('Time in range', pct(st.ranges.inRange)), stat('Below range', pct(st.ranges.low + st.ranges.veryLow)),
+      stat('Above range', pct(st.ranges.high + st.ranges.veryHigh)), stat('Variability (CV)', fmtNum(st.cv, 1), '%'),
+      stat('Std deviation', fmtG(st.sd), gUnit()), stat('Lows ≥ 15 min', fmtNum(st.lows)),
+      stat('Lowest / highest', `${fmtG(st.min)} / ${fmtG(st.max)}`), stat('Readings', fmtNum(st.readings), cgm && days >= 3 ? `${fmtNum(st.perDay)}/day` : '')),
+    h('div', { style: { marginTop: '14px' } }, rangeBar(st.ranges)), rangeLegend(st.ranges, g.target),
+    h('p', { class: 'small muted' }, `Targets: time in range above 70 %, below range under 4 %, CV at or under 36 %. GMI estimates HbA1c from the average (3.31 + 0.02392 × mg/dL) and needs about 14 days of CGM data to mean much. Target range ${fmtG(g.target[0])}–${fmtG(g.target[1])} ${gUnit()} (change it in Settings).`));
+
+    // Readings chart with overlays.
+    const avail = GLUCOSE_OVERLAYS.filter(t => types[t]);
+    overlayChips.replaceChildren(h('span', { class: 'muted small' }, 'Overlay:'),
+      ...avail.map((t, i) => h('span', { class: 'chip' + (state.overlays.includes(t) ? ' on' : ''), style: { color: PALETTE[(i + 1) % PALETTE.length] },
+        onclick: () => { state.overlays = state.overlays.includes(t) ? state.overlays.filter(x => x !== t) : [...state.overlays, t]; draw(); } },
+      h('span', { class: 'dot', style: { background: PALETTE[(i + 1) % PALETTE.length] } }), typeLabel(t))),
+      h('label', { class: 'chip' + (state.workouts ? ' on' : ''), style: { color: '#f97316' } }, h('input', { type: 'checkbox', checked: state.workouts, style: { margin: 0 },
+        onchange: e => { state.workouts = e.target.checked; draw(); } }), 'Workouts'),
+      h('a', { class: 'small', href: '#/metrics?types=' + ['blood_glucose', ...state.overlays].join(',') + '&range=' + (days <= 7 ? '7d' : days <= 30 ? '30d' : days <= 90 ? '90d' : '1y') + '&mode=stack' }, 'Open in Metrics →'));
+    const readingsEl = h('div', { class: 'chart' });
+    const agpEl = h('div', { class: 'chart' });
+    const dailyEl = h('div', { class: 'chart' });
+    body.replaceChildren(statsCard,
+      card('Readings', h('div', { class: 'toolbar' }, overlayChips), readingsEl,
+        h('p', { class: 'small muted' }, 'Green band: target range. ', state.workouts ? 'Orange: workouts. ' : '', 'Overlays get their own axis; drag across the chart to zoom, double-click to reset.')),
+      days < 3 ? null : h('div', { class: 'grid cols-2' },
+        card('Daily pattern (ambulatory glucose profile)', agpEl, h('p', { class: 'small muted' }, `Every day of the period folded onto one: median line, 25–75 % and 5–95 % bands, per 15 minutes${cgm ? '' : '. With finger-prick readings only, the bands are rough'}.`)),
+        card('Time in range per day', dailyEl)));
+
+    const gx = g.readings.map(r => r[0]), gy = g.readings.map(r => gVal(r[1]));
+    const tables = [[gx, gy]];
+    const bucket = days <= 3 ? 'raw' : days <= 30 ? 'hour' : 'day';
+    const overlayData = await Promise.all(state.overlays.map(t => api('series', { type: t, from, to: today(), bucket: isCumulativeType(types, t) && bucket === 'raw' ? 'hour' : bucket }).catch(() => null)));
+    const defs = [];
+    overlayData.forEach((sr, k) => {
+      if (!sr || !sr.points.length) return;
+      const t = state.overlays[k];
+      tables.push([sr.points.map(p => p.t), sr.points.map(p => p.v * scaleFor(sr.unit))]);
+      defs.push({ t, sr, color: PALETTE[(avail.indexOf(t) + 1) % PALETTE.length] });
+    });
+    const joined = tables.length > 1 ? uPlot.join(tables) : tables[0];
+    chart(readingsEl, {
+      xs: joined[0], height: 340, hooks: { drawClear: [glucoseBackdrop(g.target, state.workouts ? ws : [])] },
+      series: [
+        { label: 'Glucose', color: '#e8445a', scale: 'g', unit: gUnit(), dec: mmol() ? 1 : 0, values: joined[1], points: !cgm || g.readings.length < 200, width: cgm ? 2 : 1.5,
+          spanGaps: false, axisFmt: v => fmtNum(v, mmol() ? 1 : 0) },
+        ...defs.map((d, k) => ({ label: typeLabel(d.t), color: d.color, scale: d.t, unit: prettyUnit(d.sr.unit), dec: typeDec(d.t, d.sr.unit), values: joined[k + 2],
+          bars: d.sr.cumulative, width: 1.5, fill: d.sr.cumulative ? d.color + '66' : undefined })),
+      ],
+    });
+    // Ambulatory glucose profile and per-day time in range, for periods of several days.
+    if (days < 3) { /* one day: the readings chart says it all */ }
+    else if (g.agp.length > 3) {
+      const xs = g.agp.map(b => b.minute * 60), col = k => g.agp.map(b => gVal(b[k]));
+      chart(agpEl, { xs, height: 280, xTime: false, xIncrs: [3600, 7200, 10800, 14400, 21600], xFmt: (u, vals) => vals.map(v => `${String(Math.floor(v / 3600)).padStart(2, '0')}:${String(Math.floor(v % 3600 / 60)).padStart(2, '0')}`),
+        hooks: { drawClear: [glucoseBackdrop(g.target)] },
+        bands: [{ series: [1, 5], fill: '#e8445a1a' }, { series: [2, 4], fill: '#e8445a40' }],
+        series: [['95 %', 'p95'], ['75 %', 'p75'], ['Median', 'p50'], ['25 %', 'p25'], ['5 %', 'p5']].map(([label, k]) => ({
+          label, scale: 'g', values: col(k), color: k === 'p50' ? '#e8445a' : '#e8445a66', width: k === 'p50' ? 2.5 : 1, dash: k === 'p5' || k === 'p95' ? [4, 3] : undefined,
+          unit: gUnit(), dec: mmol() ? 1 : 0, axisFmt: v => fmtNum(v, mmol() ? 1 : 0) })) });
+    } else agpEl.append(empty('Not enough readings for a daily pattern.'));
+    // Per-day time in range
+    if (days >= 3) {
+    const xs = g.days.map(d => new Date(d.date + 'T00:00').getTime() / 1000);
+    stackedBars(dailyEl, { xs, height: 280, stacks: GLUCOSE_BANDS.map(([k, label, color]) => ({ label, color, values: g.days.map(d => d.ranges[k] * 100) })),
+      valueFmt: v => fmtNum(v, 0) + '%', axisFmt: v => fmtNum(v) + '%', xFmt: (u, vals) => vals.map(v => fmtDateShort(v)) });
+    }
+
+    // Finger-prick style readings list.
+    if (!cgm) {
+      const recent = g.readings.slice(-60).reverse();
+      body.append(card('Latest readings', h('div', { class: 'scroll', style: { maxHeight: '360px' } }, h('table', {}, h('tbody', {}, recent.map(r => h('tr', {},
+        h('td', {}, fmtDateTime(r[0])), h('td', { class: 'r num' }, fmtG(r[1]), ' ', gUnit()), h('td', { class: 'muted' }, r[2] || ''),
+        h('td', {}, h('span', { class: 'badge', style: { color: r[1] < g.target[0] ? '#ef4444' : r[1] > g.target[1] ? '#f59e0b' : '#16a34a' } },
+          r[1] < g.target[0] ? 'low' : r[1] > g.target[1] ? 'high' : 'in range')))))))));
+    }
+  }
+  draw();
+};
+function isCumulativeType(types, t) { return !!types[t]?.cumulative; }
+
 // ---------- records ----------
 
 pages.records = async (main) => {
@@ -1130,12 +1297,20 @@ pages.settings = async (main) => {
   const profile = await api('profile').catch(() => ({}));
   const maxIn = h('input', { type: 'number', min: 120, max: 230, placeholder: String(profile.maxHr || ''), value: settings.maxHr, style: { width: '110px' } });
   const sexNames = { 1: 'female', 2: 'male', 3: 'other' };
+  const lowIn = h('input', { type: 'number', min: 50, max: 120, value: settings.glucoseLow || 70, style: { width: '90px' } });
+  const highIn = h('input', { type: 'number', min: 100, max: 300, value: settings.glucoseHigh || 180, style: { width: '90px' } });
   main.replaceChildren(h('h1', {}, 'Settings'),
     card('Display',
       h('div', { class: 'toolbar' }, h('span', { style: { width: '160px' } }, 'Units'),
         seg([['metric', 'Kilometres'], ['imperial', 'Miles']], settings.units, v => { settings.units = v; saveSettings(); })),
       h('div', { class: 'toolbar' }, h('span', { style: { width: '160px' } }, 'Theme'),
         seg([['auto', 'System'], ['light', 'Light'], ['dark', 'Dark']], settings.theme, v => { settings.theme = v; saveSettings(); applyTheme(); }))),
+    card('Blood glucose',
+      h('div', { class: 'toolbar' }, h('span', { style: { width: '160px' } }, 'Unit'),
+        seg([['mg/dL', 'mg/dL'], ['mmol/L', 'mmol/L']], settings.glucoseUnit || 'mg/dL', v => { settings.glucoseUnit = v; saveSettings(); })),
+      h('div', { class: 'toolbar' }, h('span', { style: { width: '160px' } }, 'Target range (mg/dL)'), lowIn, '–', highIn,
+        h('button', { onclick: () => { settings.glucoseLow = lowIn.value || '70'; settings.glucoseHigh = highIn.value || '180'; saveSettings(); apiCache.clear(); } }, 'Save')),
+      h('p', { class: 'small muted' }, 'The usual CGM target is 70–180 mg/dL (3.9–10.0 mmol/L); some use 70–140 (3.9–7.8) for tighter goals. Very low (< 54) and very high (> 250) are fixed.')),
     card('Heart rate',
       h('div', { class: 'toolbar' }, h('span', { style: { width: '160px' } }, 'Maximum heart rate'), maxIn,
         h('button', { onclick: () => { settings.maxHr = maxIn.value; saveSettings(); apiCache.clear(); maxIn.blur(); } }, 'Save'),

@@ -232,12 +232,13 @@ database only, and shows new data as soon as a sync finishes.
 
 | page | what's on it |
 |---|---|
-| **Dashboard** | today's Move/Exercise/Stand rings and the last week's, last night's sleep, cards for steps, energy, distance, resting heart rate, HRV, VO₂ max, weight, respiratory rate, blood oxygen… (today, 7-day average against the 4 weeks before, 60-day sparkline), recent workouts and weekly training time by activity |
-| **Metrics** | chart any synced type over any range (7 days to all time, or custom dates), grouped per sample, hour, day, week, month or year; several metrics at once, either **stacked** (one chart each, cursors linked) or **overlaid** (one chart, an axis per unit); min/max bands; average/min/max/total/trend table. The URL keeps the selection, so a view can be bookmarked |
+| **Dashboard** | today's Move/Exercise/Stand rings and the last week's, last night's sleep, 14-day blood glucose summary (when there is glucose data), cards for steps, energy, distance, resting heart rate, HRV, VO₂ max, weight, respiratory rate, blood oxygen… (today, 7-day average against the 4 weeks before, 60-day sparkline), recent workouts and weekly training time by activity |
+| **Metrics** | chart any synced type over any range (today, yesterday, 7 days to all time, or custom dates), grouped per sample, hour, day, week, month or year; several metrics at once, either **stacked** (one chart each, cursors linked) or **overlaid** (one chart, an axis per unit); min/max bands; average/min/max/total/trend table. The URL keeps the selection, so a view can be bookmarked |
 | **Workouts** | filter by activity and period; totals, a year calendar, time per week or month, training load (fitness, fatigue and form from heart-rate TRIMP), and the list |
 | **Workout** | the route on a map coloured by pace, heart rate or elevation; heart rate, pace/speed, elevation and power over time (hovering moves a marker along the route); splits per km or mile; heart rate zones; best 400 m … marathon inside the workout; laps, segments and every statistic |
 | **Map** | every GPS route of a period on one map, coloured by activity |
 | **Sleep** | stages per night (click one for its timeline), averages, bedtime and wake time, consistency |
+| **Glucose** | blood glucose from a CGM or meter: average, GMI (estimated A1c), time in/below/above range, variability (CV), low episodes; readings with your target band and optional overlays (heart rate, steps, carbohydrates, insulin, workouts…); the daily pattern (ambulatory glucose profile) and time in range per day. mg/dL or mmol/L and the target range are set in Settings |
 | **Records** | fastest running efforts from the GPS routes, best days, health bests, ring streaks, and bests per activity |
 | **Settings** | km or miles, light/dark theme, maximum heart rate (default 220 − age from your date of birth) |
 
@@ -247,7 +248,7 @@ together. A night of sleep is everything from 18:00 to 18:00 the next day, taken
 sleep that night. Settings are kept in the browser.
 
 The web app's data comes from a JSON API under `/api/` (`types`, `series`, `workouts`, `workouts/{uuid}`, `routes`,
-`sleep`, `activity`, `profile`, `records`, `records/efforts`, `status`), which also accepts the `SYNC_TOKEN` as a bearer
+`sleep`, `glucose`, `activity`, `profile`, `records`, `records/efforts`, `status`), which also accepts the `SYNC_TOKEN` as a bearer
 token, for scripts. Map tiles load from OpenStreetMap in the browser; everything else (including the chart and map
 libraries, [uPlot](https://github.com/leeoniya/uPlot) and [Leaflet](https://leafletjs.com)) is served by the
 container.
