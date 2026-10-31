@@ -1164,8 +1164,10 @@ function rampColor(f) { // blue → green → yellow → red
 function makeMap(el) {
   const map = L.map(el, { scrollWheelZoom: true, preferCanvas: true });
   const tiles = window.healthStatus?.tiles || {};
+  // The page's Referrer-Policy (same-origin) would send tile requests without a Referer, and OpenStreetMap's tile
+  // usage policy blocks those with a 403. Send just the site's origin to the tile server, nothing else.
   L.tileLayer(tiles.url || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: tiles.attribution || '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    referrerPolicy: 'strict-origin-when-cross-origin', maxZoom: 19, attribution: tiles.attribution || '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   }).addTo(map);
   onCleanup(() => map.remove());
   observeWidth(el, () => map.invalidateSize());

@@ -171,9 +171,7 @@ func registerWeb(mux *http.ServeMux, w *WebAPI, auth *webAuth) {
 			rw.Header().Set("Cache-Control", "no-cache")
 		}
 		rw.Header().Set("X-Content-Type-Options", "nosniff")
-		// strict-origin-when-cross-origin sends only the origin to the map tile server, which OpenStreetMap requires
-		// (it answers 403 to tile requests without a Referer); paths and queries stay private.
-		rw.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		rw.Header().Set("Referrer-Policy", "same-origin")
 		files.ServeHTTP(rw, r)
 	})
 }
