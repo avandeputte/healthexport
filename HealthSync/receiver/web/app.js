@@ -1,4 +1,4 @@
-/* Health Sync web app: a small single-page app over the receiver's /api. No build step; uPlot draws the charts and
+/* ioHealth, the web app: a small single-page app over the receiver's /api. No build step; uPlot draws the charts and
    Leaflet the maps. Pages are hash routes (#/workouts, #/workout/<uuid>, #/metrics?types=…). */
 'use strict';
 
@@ -42,10 +42,27 @@ function s(tag, attrs, ...children) {
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
 const settings = (() => {
-  const defaults = { units: 'metric', maxHr: '', theme: 'auto', glucoseUnit: '', glucoseLow: '70', glucoseHigh: '180' };
+  const defaults = { units: 'metric', maxHr: '', theme: 'auto', glucoseUnit: '', glucoseLow: '70', glucoseHigh: '180', hiddenSections: [], hiddenTypes: [] };
   try { return Object.assign(defaults, JSON.parse(localStorage.getItem('healthsync.settings') || '{}')); } catch { return defaults; }
 })();
-function saveSettings() { try { localStorage.setItem('healthsync.settings', JSON.stringify(settings)); } catch { /* private mode */ } }
+// Settings live in the database (web_settings), shared by every browser; the copy in localStorage only makes the
+// theme right before the server answers.
+let settingsTimer;
+function saveSettings() {
+  try { localStorage.setItem('healthsync.settings', JSON.stringify(settings)); } catch { /* private mode */ }
+  clearTimeout(settingsTimer);
+  settingsTimer = setTimeout(() => fetch('api/settings', { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings) }).catch(e => console.error('saving settings', e)), 300);
+}
+async function loadSettings() {
+  try {
+    const r = await fetch('api/settings', { credentials: 'same-origin' });
+    if (r.status === 401) { location.href = 'login.html'; return; }
+    const stored = await r.json();
+    if (Object.keys(stored).length) Object.assign(settings, stored);
+    else saveSettings(); // first run: keep what this browser had
+  } catch (e) { console.error('loading settings', e); }
+}
 function applyTheme() {
   if (settings.theme === 'auto') document.documentElement.removeAttribute('data-theme');
   else document.documentElement.setAttribute('data-theme', settings.theme);
@@ -232,7 +249,7 @@ function observeWidth(el, f) {
    series: [{label, color, unit, dec, bars, scale, values, fill, dash, points, value(fmt)}]; data = [xs, ...values]. */
 function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt, xIncrs, bands, legend = true, yRange, hooks, axisFmt, incrs }) {
   const muted = cssVar('--muted'), line = cssVar('--line');
-  const scales = { x: { time: xTime, range: xRange ? () => xRange : undefined } };
+  const scales = { x: { time: xTime } };
   const axes = [{ stroke: muted, grid: { stroke: line, width: 1 }, ticks: { stroke: line }, values: xFmt, incrs: xIncrs }];
   const useries = [{ label: xTime ? 'Time' : '', value: xTime ? (u, v) => v == null ? '' : fmtDateTime(v) : (u, v) => v == null ? '' : (xFmt ? xFmt(u, [v])[0] : v) }];
   const seen = [];
@@ -258,13 +275,95 @@ function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt,
   }
   const opts = {
     width: el.clientWidth || 600, height, scales, axes, series: useries, bands,
-    legend: { show: legend, live: true }, cursor: { sync: sync ? { key: sync, setSeries: false } : undefined, drag: { x: true, y: false } },
+    legend: { show: legend, live: true }, cursor: { sync: sync ? { key: sync, setSeries: false } : undefined, drag: { x: true, y: false }, bind: { dblclick: () => () => null } },
     hooks,
   };
   const u = new uPlot(opts, [xs, ...series.map(sr => sr.values)], el);
+  if (xRange) u.setScale('x', { min: xRange[0], max: xRange[1] });
   observeWidth(el, w => u.setSize({ width: w, height }));
   onCleanup(() => u.destroy());
   return u;
+}
+
+/* zoomGroup keeps the x axes of several charts together and adds zoom and pan: drag across a chart to zoom into that
+   period, Ctrl/⌘ + scroll or a trackpad pinch to zoom, Shift-drag or a sideways swipe to pan, two-finger pinch and
+   one-finger drag on touch screens, double-click to go back. onView([from, to]) runs once the view settles. */
+function zoomGroup({ home, onView, maxT }) {
+  const g = { charts: [], home, syncing: false, timer: null };
+  g.view = () => { const u = g.charts[0]; return u && u.scales.x.min != null ? [u.scales.x.min, u.scales.x.max] : g.home; };
+  g.set = (a, b) => {
+    const minSpan = 900, limit = maxT || Date.now() / 1000 + DAY;
+    if (b - a < minSpan) { const c = (a + b) / 2; a = c - minSpan / 2; b = c + minSpan / 2; }
+    if (b > limit) { a -= b - limit; b = limit; }
+    g.syncing = true;
+    for (const u of g.charts) u.setScale('x', { min: a, max: b });
+    g.syncing = false;
+    g.changed();
+  };
+  g.zoom = (f, center) => { const [a, b] = g.view(); const c = center ?? (a + b) / 2; g.set(c - (c - a) * f, c + (b - c) * f); };
+  g.pan = f => { const [a, b] = g.view(), d = (b - a) * f; g.set(a + d, b + d); };
+  g.reset = () => g.set(...g.home);
+  g.changed = () => { clearTimeout(g.timer); g.timer = setTimeout(() => onView && onView(g.view()), 350); };
+  // Called from the chart's setScale hook, e.g. after a drag-to-zoom on one chart.
+  g.scaled = u => {
+    if (g.syncing) return;
+    g.syncing = true;
+    for (const o of g.charts) if (o !== u) o.setScale('x', { min: u.scales.x.min, max: u.scales.x.max });
+    g.syncing = false;
+    g.changed();
+  };
+  g.attach = u => {
+    g.charts.push(u);
+    u.setScale('x', { min: g.home[0], max: g.home[1] });
+    const over = u.over;
+    const tAt = clientX => { const r = over.getBoundingClientRect(); return u.posToVal(clientX - r.left, 'x'); };
+    over.addEventListener('wheel', e => {
+      const sideways = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+      if (e.ctrlKey || e.metaKey) { e.preventDefault(); g.zoom(Math.exp(e.deltaY * 0.01), tAt(e.clientX)); }
+      else if (sideways || e.shiftKey) { e.preventDefault(); const [a, b] = g.view(); const d = (sideways ? e.deltaX : e.deltaY) / over.clientWidth * (b - a); g.set(a + d, b + d); }
+    }, { passive: false });
+    over.addEventListener('mousedown', e => {
+      if (!(e.shiftKey || e.altKey) || e.button !== 0) return;
+      e.stopPropagation(); e.preventDefault();
+      const x0 = e.clientX, [a0, b0] = g.view();
+      let frame;
+      const move = m => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => { const d = -(m.clientX - x0) / over.clientWidth * (b0 - a0); g.set(a0 + d, b0 + d); }); };
+      const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+      window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+    }, true);
+    over.addEventListener('dblclick', e => { e.stopPropagation(); g.reset(); }, true);
+    let touch = null;
+    over.addEventListener('touchstart', e => {
+      const [a, b] = g.view();
+      touch = { a, b, x: [...e.touches].map(t => t.clientX), moved: false };
+    }, { passive: true });
+    over.addEventListener('touchmove', e => {
+      if (!touch) return;
+      const xs = [...e.touches].map(t => t.clientX), w = over.clientWidth, span = touch.b - touch.a;
+      if (xs.length === 2 && touch.x.length === 2) {
+        e.preventDefault();
+        const d0 = Math.abs(touch.x[0] - touch.x[1]) || 1, d1 = Math.abs(xs[0] - xs[1]) || 1;
+        const c = tAt((touch.x[0] + touch.x[1]) / 2), f = d0 / d1;
+        g.set(c - (c - touch.a) * f, c + (touch.b - c) * f);
+      } else if (xs.length === 1 && touch.x.length === 1 && (touch.moved || Math.abs(xs[0] - touch.x[0]) > 12)) {
+        e.preventDefault();
+        touch.moved = true;
+        const d = -(xs[0] - touch.x[0]) / w * span;
+        g.set(touch.a + d, touch.b + d);
+      }
+    }, { passive: false });
+    over.addEventListener('touchend', () => { touch = null; });
+  };
+  return g;
+}
+
+function zoomToolbar(g, label) {
+  const btn = (text, title, f) => h('button', { title, onclick: f }, text);
+  return h('div', { class: 'toolbar zoombar' },
+    h('span', { class: 'seg' }, btn('−', 'Zoom out', () => g.zoom(2)), btn('+', 'Zoom in', () => g.zoom(0.5))),
+    h('span', { class: 'seg' }, btn('◀', 'Earlier', () => g.pan(-0.5)), btn('▶', 'Later', () => g.pan(0.5))),
+    btn('Reset', 'Back to the selected range', () => g.reset()), label,
+    h('span', { class: 'muted small hint' }, 'Drag across a chart to zoom in · Shift-drag or swipe sideways to pan · Ctrl/⌘ + scroll or pinch to zoom · double-click to reset'));
 }
 
 /* stackedBars draws stacked bars with uPlot by plotting running totals, tallest first, so each bar covers the ones
@@ -338,8 +437,26 @@ function slopePerDay(points) {
   return d ? (n * sxy - sx * sy) / d : null;
 }
 
+// Sections and metrics can be switched off in Settings; switched-off metrics are left out of every list and chart.
+const SECTIONS = [['activity', 'Activity rings', 'the Move/Exercise/Stand card on the dashboard'], ['sleep', 'Sleep', 'the Sleep page, the last-night card and sleep in Metrics'],
+  ['glucose', 'Blood glucose', 'the Glucose page and the dashboard glucose card'], ['workouts', 'Workouts', 'the Workouts and Map pages and the workout cards on the dashboard'],
+  ['records', 'Records', 'the Records page']];
+const sectionOn = name => !(settings.hiddenSections || []).includes(name);
+function typeHidden(t) {
+  if ((settings.hiddenTypes || []).includes(t)) return true;
+  if (t === 'sleep_analysis' && !sectionOn('sleep')) return true;
+  if (t === 'blood_glucose' && !sectionOn('glucose')) return true;
+  return false;
+}
+function applySections() {
+  const pageSection = { sleep: 'sleep', glucose: 'glucose', workouts: 'workouts', map: 'workouts', records: 'records' };
+  for (const a of document.querySelectorAll('#nav a')) a.hidden = !!pageSection[a.dataset.page] && !sectionOn(pageSection[a.dataset.page]);
+}
+applySections();
 let typeListPromise;
-function typeList() { return typeListPromise ||= api('types').then(list => Object.fromEntries(list.map(t => [t.type, t]))); }
+function typeList() {
+  return typeListPromise ||= api('types').then(list => Object.fromEntries(list.filter(t => !typeHidden(t.type)).map(t => [t.type, t])));
+}
 
 // ---------- router ----------
 
@@ -389,15 +506,18 @@ pages.dashboard = async (main) => {
   const top = h('div', { class: 'grid cols-2' });
   const ringsCard = card('Activity rings');
   const sleepCard = card('Last night');
-  top.append(ringsCard, sleepCard);
+  const show = { activity: sectionOn('activity'), sleep: sectionOn('sleep'), workouts: sectionOn('workouts') };
+  if (show.activity) top.append(ringsCard);
+  if (show.sleep) top.append(sleepCard);
   const kpis = h('div', { class: 'grid kpis' });
   const workoutsCard = card('Recent workouts');
   const weeklyCard = card('Training volume, last 12 weeks');
-  const glucoseCard = types.blood_glucose ? card('Blood glucose, last 14 days') : null;
-  main.append(h('h1', {}, 'Dashboard'), top, glucoseCard, h('div', { style: { height: '16px' } }), kpis, h('div', { class: 'grid cols-2' }, workoutsCard, weeklyCard));
+  const glucoseCard = types.blood_glucose && sectionOn('glucose') ? card('Blood glucose, last 14 days') : null;
+  main.append(h('h1', {}, 'Dashboard'), top.children.length ? top : null, glucoseCard, h('div', { style: { height: '16px' } }), kpis,
+    show.workouts ? h('div', { class: 'grid cols-2' }, workoutsCard, weeklyCard) : null);
 
   // Rings: today big, the week small.
-  api('activity', { from: daysAgo(6), to: today() }).then(days => {
+  if (show.activity) api('activity', { from: daysAgo(6), to: today() }).then(days => {
     const byDate = Object.fromEntries(days.map(d => [d.date, d]));
     const t = byDate[today()] || days[days.length - 1];
     const row = h('div', { class: 'rings-row' });
@@ -426,7 +546,7 @@ pages.dashboard = async (main) => {
   }).catch(e => glucoseCard.append(h('p', { class: 'error' }, e.message)));
 
   // Sleep
-  api('sleep', { from: daysAgo(14), to: today() }).then(nights => {
+  if (show.sleep) api('sleep', { from: daysAgo(14), to: today() }).then(nights => {
     if (!nights.length) { sleepCard.append(empty('No sleep data in the last two weeks.')); return; }
     const last = nights[nights.length - 1];
     const avg = nights.reduce((a, n) => a + n.asleep, 0) / nights.length;
@@ -467,7 +587,7 @@ pages.dashboard = async (main) => {
   }
 
   // Workouts
-  api('workouts', { from: daysAgo(83), to: today() }).then(ws => {
+  if (show.workouts) api('workouts', { from: daysAgo(83), to: today() }).then(ws => {
     if (!ws.length) { workoutsCard.append(empty('No workouts in the last 12 weeks.')); weeklyCard.append(empty('Nothing to show yet.')); return; }
     workoutsCard.append(workoutTable(ws.slice(0, 8), { compact: true }), h('p', { class: 'small' }, h('a', { href: '#/workouts' }, 'All workouts →')));
     const chartEl = h('div', { class: 'chart' });
@@ -570,6 +690,18 @@ pages.metrics = async (main, _, params) => {
         seg([['stack', 'Stacked'], ['overlay', 'Overlay']], state.mode, v => { state.mode = v; draw(); }), bandBox)),
     h('div', { style: { height: '16px' } }), out, summary);
 
+  // The bucket for a visible span: every sample when zoomed in close, coarser as the span grows.
+  const bucketFor = (t, span) => {
+    if (state.bucket !== 'auto') return state.bucket;
+    const cumulative = types[t]?.cumulative;
+    if (span <= 1.5 * DAY && !cumulative && t !== 'sleep_analysis') return 'raw';
+    if (span <= 3 * DAY) return 'hour';
+    if (span <= 400 * DAY) return 'day';
+    if (span <= 4 * 365 * DAY) return 'week';
+    return 'month';
+  };
+  const BUCKET_WORDS = { raw: 'every sample', hour: 'hourly', day: 'daily', week: 'weekly', month: 'monthly', year: 'yearly' };
+
   let drawSeq = 0;
   async function draw() {
     save();
@@ -590,62 +722,125 @@ pages.metrics = async (main, _, params) => {
       const first = Math.min(...state.types.map(t => types[t].first));
       from = isoDate(new Date(first * 1000));
     } else from = daysAgo(RANGES.find(r => r[0] === state.range)[2] - 1);
-    const xRange = [new Date(from + 'T00:00').getTime() / 1000, new Date(to + 'T00:00').getTime() / 1000 + DAY];
-    const spanDays = (xRange[1] - xRange[0]) / DAY;
-    let results;
+    const home = [new Date(from + 'T00:00').getTime() / 1000, new Date(to + 'T00:00').getTime() / 1000 + DAY];
+    const earliest = Math.min(...state.types.map(t => types[t].first)) - DAY;
+
+    // What is loaded: the period fetched and each metric's reply.
+    let loaded = { a: home[0], b: home[1], results: null };
+    const fetchAll = (a, b) => Promise.all(state.types.map(t => api('series', { type: t, from: String(Math.floor(a)), to: String(Math.ceil(b)), bucket: bucketFor(t, b - a) })));
     try {
-      results = await Promise.all(state.types.map(t => api('series', { type: t, from, to, bucket: state.bucket })));
+      loaded.results = await fetchAll(home[0], home[1]);
     } catch (e) { if (seq === drawSeq) showError(out, e); return; }
     if (seq !== drawSeq) return;
-    out.replaceChildren();
-    const defs = results.map((r, i) => {
-      const k = scaleFor(r.unit), unit = prettyUnit(r.unit);
-      return { r, i, k, unit, color: PALETTE[i % PALETTE.length], t: state.types[i], bars: r.cumulative && r.bucket !== 'raw' && r.bucket !== 'hour' || (r.cumulative && r.bucket === 'hour') };
-    });
-    const bucketLabel = results[0]?.bucket;
+
+    const viewLabel = h('span', { class: 'muted small' });
+    const group = zoomGroup({ home, onView: v => refresh(v) });
+    const defs = state.types.map((t, i) => ({ t, i, color: PALETTE[i % PALETTE.length], band: state.band && !types[t].cumulative }));
+    const unitOf = d => loaded.results[d.i].unit;
+    const k = d => scaleFor(unitOf(d));
+    const isBars = d => loaded.results[d.i].cumulative;
+    // Data arrays for a metric: [xs, value, (max, min)].
+    const dataFor = d => {
+      const pts = loaded.results[d.i].points, kk = k(d);
+      const cols = [pts.map(p => p.t), pts.map(p => p.v * kk)];
+      if (d.band) cols.push(pts.map(p => (p.max ?? p.v) * kk), pts.map(p => (p.min ?? p.v) * kk));
+      return cols;
+    };
+    const hooks = { setScale: [(u, key) => { if (key === 'x') group.scaled(u); }] };
+    const subtitles = [];
+    let overlayChart, stackCharts = [];
+    out.replaceChildren(card(null, zoomToolbar(group, viewLabel)));
     if (state.mode === 'overlay') {
-      const tables = defs.map(d => [d.r.points.map(p => p.t), d.r.points.map(p => p.v * d.k)]);
-      const joined = tables.length > 1 ? uPlot.join(tables) : tables[0];
       const el = h('div', { class: 'chart' });
-      out.append(card(`${defs.map(d => typeLabel(d.t)).join(' · ')}`, el, h('p', { class: 'small muted' }, `Grouped by ${bucketLabel}. Each unit has its own axis.`)));
-      chart(el, { xs: joined[0], height: 420, xRange, series: defs.map((d, j) => ({
-        label: typeLabel(d.t), color: d.color, unit: d.unit, dec: typeDec(d.t, d.r.unit), scale: d.unit || d.t, values: joined[j + 1],
-        bars: false, points: d.r.points.length < 60, fill: d.bars ? d.color + '22' : undefined, stepped: d.bars && defs.length === 1,
+      out.append(card(`${defs.map(d => typeLabel(d.t)).join(' · ')}`, el, h('p', { class: 'small muted' }, 'Each unit has its own axis.')));
+      const joined = defs.length > 1 ? uPlot.join(defs.map(d => dataFor(d).slice(0, 2))) : dataFor(defs[0]).slice(0, 2);
+      overlayChart = chart(el, { xs: joined[0], height: 420, hooks, series: defs.map((d, j) => ({
+        label: typeLabel(d.t), color: d.color, unit: prettyUnit(unitOf(d)), dec: typeDec(d.t, unitOf(d)), scale: prettyUnit(unitOf(d)) || d.t, values: joined[j + 1],
+        points: false, fill: isBars(d) ? d.color + '22' : undefined,
       })) });
+      group.attach(overlayChart);
     } else {
       for (const d of defs) {
         const el = h('div', { class: 'chart' });
-        const pts = d.r.points;
-        out.append(card(null, h('div', { class: 'row spread' }, h('h2', { style: { color: d.color } }, typeLabel(d.t)), h('span', { class: 'muted small' }, `${d.unit || 'count'} · ${d.r.bucket}${d.r.cumulative ? ' totals' : ' averages'}`)), el));
-        if (!pts.length) { el.append(empty('No data in this range.')); continue; }
-        const xs = pts.map(p => p.t), ys = pts.map(p => p.v * d.k);
-        const dec = typeDec(d.t, d.r.unit);
-        const series = [{ label: typeLabel(d.t), color: d.color, unit: d.unit, dec, values: ys, bars: d.bars, points: !d.bars && pts.length < 90 }];
+        const sub = h('span', { class: 'muted small' });
+        subtitles.push([d, sub]);
+        out.append(card(null, h('div', { class: 'row spread' }, h('h2', { style: { color: d.color } }, typeLabel(d.t)), sub), el));
+        const cols = dataFor(d), dec = typeDec(d.t, unitOf(d)), unit = prettyUnit(unitOf(d));
+        const series = [{ label: typeLabel(d.t), color: d.color, unit, dec, values: cols[1], bars: isBars(d), points: !isBars(d) && cols[0].length < 90 }];
         let bands;
-        if (state.band && !d.r.cumulative && pts.some(p => p.min != null && p.n > 1)) {
-          series.push({ label: 'max', color: d.color + '55', width: 1, unit: d.unit, dec, values: pts.map(p => p.max != null ? p.max * d.k : null) });
-          series.push({ label: 'min', color: d.color + '55', width: 1, unit: d.unit, dec, values: pts.map(p => p.min != null ? p.min * d.k : null) });
+        if (d.band) {
+          series.push({ label: 'max', color: d.color + '55', width: 1, unit, dec, values: cols[2] });
+          series.push({ label: 'min', color: d.color + '55', width: 1, unit, dec, values: cols[3] });
           bands = [{ series: [2, 3], fill: d.color + '1f' }];
         }
-        chart(el, { xs, series, bands, xRange, height: defs.length > 2 ? 200 : 260, sync: 'metrics' });
+        const u = chart(el, { xs: cols[0], series, bands, hooks, height: defs.length > 2 ? 200 : 260, sync: 'metrics' });
+        stackCharts.push(u);
+        group.attach(u);
       }
     }
-    // Summary table
-    const tb = h('tbody');
-    for (const d of defs) {
-      const pts = d.r.points, vals = pts.map(p => p.v * d.k);
-      if (!vals.length) { tb.append(h('tr', {}, h('td', {}, typeLabel(d.t)), h('td', { colspan: 6, class: 'muted' }, 'no data'))); continue; }
-      const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-      const mn = Math.min(...pts.map(p => (p.min ?? p.v) * d.k)), mx = Math.max(...pts.map(p => (p.max ?? p.v) * d.k));
-      const slope = spanDays >= 14 ? slopePerDay(pts.map((p, i) => [p.t, vals[i]])) : null;
-      const dec = typeDec(d.t, d.r.unit);
-      tb.append(h('tr', {}, h('td', {}, h('span', { class: 'dot', style: { background: d.color, display: 'inline-block', width: '9px', height: '9px', borderRadius: '50%', marginRight: '6px' } }), typeLabel(d.t)),
-        h('td', { class: 'r num' }, fmtNum(avg, dec), ' ', d.unit), h('td', { class: 'r num' }, fmtNum(mn, dec)), h('td', { class: 'r num' }, fmtNum(mx, dec)),
-        h('td', { class: 'r num' }, d.r.cumulative ? fmtNum(vals.reduce((a, b) => a + b, 0), dec) : '—'),
-        h('td', { class: 'r num' }, fmtNum(vals[vals.length - 1], dec)),
-        h('td', { class: 'r num' }, slope == null ? '—' : (slope > 0 ? '+' : '') + fmtNum(slope * 30, dec + 1) + ' / 30 days')));
+
+    function describe([a, b]) {
+      const r0 = loaded.results[0];
+      const fmt = (b - a) <= 2 * DAY ? fmtDateTime : fmtDate;
+      viewLabel.textContent = `${fmt(a)} – ${fmt(b - 1)} · ${BUCKET_WORDS[r0?.bucket] || ''}`;
+      for (const [d, sub] of subtitles) {
+        const r = loaded.results[d.i];
+        sub.textContent = `${prettyUnit(r.unit) || 'count'} · ${BUCKET_WORDS[r.bucket]}${r.bucket === 'raw' ? '' : r.cumulative ? ' totals' : ' averages'}`;
+      }
+      renderSummary(a, b);
     }
-    summary.replaceChildren(card('Summary', h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ...['Metric', `Average per ${bucketLabel === 'raw' ? 'sample' : bucketLabel}`, 'Min', 'Max', 'Total', 'Latest', 'Trend'].map((x, i) => h('th', { class: i ? 'r' : '' }, x)))), tb))));
+
+    // After a zoom or pan: fetch again when the view leaves the loaded period or wants a finer or coarser bucket.
+    let refreshSeq = 0;
+    async function refresh([a, b]) {
+      const span = b - a;
+      const needs = a < Math.max(loaded.a, earliest) || b > loaded.b + 60 ||
+        state.types.some((t, i) => bucketFor(t, span) !== loaded.results[i].bucket);
+      if (!needs) { describe([a, b]); return; }
+      const my = ++refreshSeq;
+      const fa = Math.max(earliest, a - span / 2), fb = Math.min(Date.now() / 1000 + DAY, b + span / 2);
+      viewLabel.textContent = 'Loading…';
+      let results;
+      try { results = await fetchAll(fa, fb); } catch (e) { viewLabel.textContent = 'Could not load: ' + e.message; return; }
+      if (my !== refreshSeq || seq !== drawSeq) return;
+      loaded = { a: fa, b: fb, results };
+      const [va, vb] = group.view();
+      group.syncing = true;
+      if (overlayChart) {
+        const joined = defs.length > 1 ? uPlot.join(defs.map(d => dataFor(d).slice(0, 2))) : dataFor(defs[0]).slice(0, 2);
+        overlayChart.setData(joined, false);
+      }
+      stackCharts.forEach((u, j) => {
+        const d = defs[j], cols = dataFor(d);
+        u.series[1].points.show = () => !isBars(d) && cols[0].length < 90;
+        u.setData(cols, false);
+      });
+      for (const u of group.charts) u.setScale('x', { min: va, max: vb });
+      group.syncing = false;
+      describe([va, vb]);
+    }
+
+    // Summary of what is on screen.
+    function renderSummary(a, b) {
+      const tb = h('tbody');
+      for (const d of defs) {
+        const r = loaded.results[d.i], kk = k(d), dec = typeDec(d.t, r.unit);
+        const pts = r.points.filter(p => p.t >= a && p.t < b), vals = pts.map(p => p.v * kk);
+        if (!vals.length) { tb.append(h('tr', {}, h('td', {}, typeLabel(d.t)), h('td', { colspan: 6, class: 'muted' }, 'no data in view'))); continue; }
+        const avg = vals.reduce((x, y) => x + y, 0) / vals.length;
+        const mn = Math.min(...pts.map(p => (p.min ?? p.v) * kk)), mx = Math.max(...pts.map(p => (p.max ?? p.v) * kk));
+        const slope = (b - a) >= 14 * DAY ? slopePerDay(pts.map((p, i) => [p.t, vals[i]])) : null;
+        tb.append(h('tr', {}, h('td', {}, h('span', { class: 'dot', style: { background: d.color, display: 'inline-block', width: '9px', height: '9px', borderRadius: '50%', marginRight: '6px' } }), typeLabel(d.t)),
+          h('td', { class: 'r num' }, fmtNum(avg, dec), ' ', prettyUnit(r.unit)), h('td', { class: 'r num' }, fmtNum(mn, dec)), h('td', { class: 'r num' }, fmtNum(mx, dec)),
+          h('td', { class: 'r num' }, r.cumulative && r.bucket !== 'raw' ? fmtNum(vals.reduce((x, y) => x + y, 0), dec) : '—'),
+          h('td', { class: 'r num' }, fmtNum(vals[vals.length - 1], dec)),
+          h('td', { class: 'r num' }, slope == null ? '—' : (slope > 0 ? '+' : '') + fmtNum(slope * 30, dec + 1) + ' / 30 days')));
+      }
+      const per = loaded.results[0]?.bucket === 'raw' ? 'sample' : { hour: 'hour', day: 'day', week: 'week', month: 'month', year: 'year' }[loaded.results[0]?.bucket];
+      summary.replaceChildren(card('Summary of the visible period', h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {},
+        ...['Metric', `Average per ${per}`, 'Min', 'Max', 'Total', 'Latest', 'Trend'].map((x, i) => h('th', { class: i ? 'r' : '' }, x)))), tb))));
+    }
+    describe(home);
   }
   draw();
 };
@@ -1255,7 +1450,10 @@ function isCumulativeType(types, t) { return !!types[t]?.cumulative; }
 // ---------- records ----------
 
 pages.records = async (main) => {
-  const [rec, eff] = await Promise.all([api('records'), api('records/efforts', { type: 'running' }).catch(() => [])]);
+  const showWorkouts = sectionOn('workouts');
+  const [rec, eff] = await Promise.all([api('records'), showWorkouts ? api('records/efforts', { type: 'running' }).catch(() => []) : []]);
+  rec.records = rec.records.filter(r => r.group === 'workout' ? showWorkouts : !typeHidden(r.type));
+  if (!sectionOn('activity')) rec.rings = [];
   const grid = h('div', { class: 'grid cols-3' });
   main.replaceChildren(h('h1', {}, 'Personal records'), grid);
   const fmtRec = r => {
@@ -1294,7 +1492,22 @@ pages.records = async (main) => {
 // ---------- settings ----------
 
 pages.settings = async (main) => {
-  const profile = await api('profile').catch(() => ({}));
+  const [profile, allTypes] = await Promise.all([api('profile').catch(() => ({})), api('types').catch(() => [])]);
+  const typeFilter = h('input', { placeholder: 'Filter…', style: { width: '200px' } });
+  const typeRows = h('div', { class: 'grid', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '2px 16px', marginTop: '10px' } });
+  const sortedTypes = allTypes.slice().sort((a, b) => typeLabel(a.type).localeCompare(typeLabel(b.type)));
+  const drawTypes = () => typeRows.replaceChildren(...sortedTypes.filter(t => !typeFilter.value || typeLabel(t.type).toLowerCase().includes(typeFilter.value.toLowerCase()))
+    .map(t => h('label', { class: 'row small', style: { gap: '6px', flexWrap: 'nowrap' } },
+      h('input', { type: 'checkbox', checked: !(settings.hiddenTypes || []).includes(t.type), onchange: e => {
+        const set = new Set(settings.hiddenTypes || []);
+        e.target.checked ? set.delete(t.type) : set.add(t.type);
+        settings.hiddenTypes = [...set]; saveSettings(); typeListPromise = null;
+      } }), typeLabel(t.type), h('span', { class: 'muted' }, fmtCompact(t.count)))));
+  typeFilter.addEventListener('input', drawTypes);
+  drawTypes();
+  const metricsCard = card('Metrics', h('div', { class: 'row spread' }, h('span', { class: 'small muted' }, 'Untick a metric to hide it everywhere (dashboard cards, Metrics, overlays). The number is how many samples you have.'),
+    h('span', { class: 'row' }, typeFilter,
+      h('button', { onclick: () => { settings.hiddenTypes = []; saveSettings(); typeListPromise = null; drawTypes(); } }, 'Show all'))), typeRows);
   const maxIn = h('input', { type: 'number', min: 120, max: 230, placeholder: String(profile.maxHr || ''), value: settings.maxHr, style: { width: '110px' } });
   const sexNames = { 1: 'female', 2: 'male', 3: 'other' };
   const lowIn = h('input', { type: 'number', min: 50, max: 120, value: settings.glucoseLow || 70, style: { width: '90px' } });
@@ -1318,12 +1531,24 @@ pages.settings = async (main) => {
       h('p', { class: 'small muted' }, 'Used for heart rate zones and training load.',
         profile.restingHr ? ` Resting heart rate, 30-day average: ${profile.restingHr} bpm.` : '')),
     card('Profile', h('div', { class: 'stats' }, stat('Age', profile.age ?? '—'), stat('Sex', sexNames[profile.characteristics?.biologicalSex] || '—'))),
-    card('About', h('p', { class: 'small muted' }, 'Settings are kept in this browser. Data comes from your MariaDB database, read-only. ',
+    card('Sections', h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Switch off what you don\'t use; it disappears from the menu, the dashboard and the metric lists.'),
+      ...SECTIONS.map(([key, label, what]) => h('label', { class: 'row', style: { gap: '8px', margin: '6px 0' } },
+        h('input', { type: 'checkbox', checked: sectionOn(key), onchange: e => {
+          const set = new Set(settings.hiddenSections || []);
+          e.target.checked ? set.delete(key) : set.add(key);
+          settings.hiddenSections = [...set]; saveSettings(); typeListPromise = null; applySections();
+        } }), h('b', {}, label), h('span', { class: 'muted small' }, what)))),
+    metricsCard,
+    card('About', h('p', { class: 'small muted' }, 'Settings are saved in the database, so every browser sees the same ones. Health data is only read, never changed. ',
       h('a', { href: 'logout' }, 'Sign out'))));
 };
 
 // ---------- start ----------
 
-refreshStatus();
-setInterval(refreshStatus, 60000);
-render();
+loadSettings().then(() => {
+  applyTheme();
+  applySections();
+  refreshStatus();
+  setInterval(refreshStatus, 60000);
+  render();
+});

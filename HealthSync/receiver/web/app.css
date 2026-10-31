@@ -74,6 +74,9 @@ button.primary, .login-card button { background: var(--accent); border-color: va
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; border-radius: 0; border-right: 1px solid var(--line); }
 .seg button:last-child { border-right: 0; }
+.zoombar { margin: 0; }
+.zoombar .seg button { min-width: 34px; font-weight: 600; }
+.zoombar .hint { flex-basis: 100%; }
 .seg button.on { background: var(--text); color: var(--card); }
 
 .kpi { cursor: pointer; display: flex; flex-direction: column; gap: 2px; }

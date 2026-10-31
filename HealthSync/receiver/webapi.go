@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,10 +26,12 @@ type WebAPI struct {
 	// Best efforts per running workout, which never change unless the workout's route is resent.
 	effortsMu   sync.Mutex
 	effortCache map[string]workoutEfforts
+	hourly      *rollupReady
+	backfilling atomic.Bool
 }
 
 func NewWebAPI(db *sql.DB) *WebAPI {
-	return &WebAPI{db: db, cache: newCache(2 * time.Minute), effortCache: map[string]workoutEfforts{}}
+	return &WebAPI{db: db, cache: newCache(2 * time.Minute), effortCache: map[string]workoutEfforts{}, hourly: &rollupReady{types: map[string]bool{}}}
 }
 
 // ---- cache ----
@@ -69,8 +72,20 @@ func (c *ttlCache) get(key string, ttl time.Duration, f func() (any, error)) (an
 	return v, nil
 }
 
-// SyncFinished forgets cached replies so new data shows up right away.
+// Backfill fills sample_hourly for types that aren't complete yet, unless that is already running.
+func (wa *WebAPI) Backfill() {
+	if !wa.backfilling.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer wa.backfilling.Store(false)
+		backfillHourly(wa.db, wa.hourly, wa.cache.Clear)
+	}()
+}
+
+// SyncFinished forgets cached replies so new data shows up right away, and rolls up any type seen for the first time.
 func (wa *WebAPI) SyncFinished() {
+	wa.Backfill()
 	wa.cache.Clear()
 	wa.effortsMu.Lock()
 	wa.effortCache = map[string]workoutEfforts{}
@@ -201,12 +216,18 @@ type typeInfo struct {
 
 func (wa *WebAPI) typeList() ([]typeInfo, error) {
 	v, err := wa.cache.get("types", 10*time.Minute, func() (any, error) {
-		// Grouped on the (type, start_date) index only; kind and unit come from one row per type.
-		rows, err := wa.db.Query("SELECT type, COUNT(*), MIN(start_date), MAX(start_date) FROM samples GROUP BY type")
+		// Counts come from sample_hourly for the types it has complete, and from the samples index for the rest;
+		// kind and unit come from one row per type.
+		var out []typeInfo
+		names, err := queryStrings(wa.db, "SELECT DISTINCT type FROM samples")
 		if err != nil {
 			return nil, err
 		}
-		var out []typeInfo
+		rolled := map[string]typeInfo{}
+		rows, err := wa.db.Query("SELECT type, SUM(n), MIN(hour), MAX(hour) FROM sample_hourly GROUP BY type")
+		if err != nil {
+			return nil, err
+		}
 		for rows.Next() {
 			var t typeInfo
 			var first, last time.Time
@@ -215,11 +236,22 @@ func (wa *WebAPI) typeList() ([]typeInfo, error) {
 				return nil, err
 			}
 			t.First, t.Last = first.Unix(), last.Unix()
-			out = append(out, t)
+			rolled[t.Type] = t
 		}
 		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
+		for _, name := range names {
+			if t, ok := rolled[name]; ok && wa.hourly.has(name) {
+				out = append(out, t)
+				continue
+			}
+			t := typeInfo{Type: name}
+			var first, last time.Time
+			if err := wa.db.QueryRow("SELECT COUNT(*), MIN(start_date), MAX(start_date) FROM samples WHERE type = ?", name).
+				Scan(&t.Count, &first, &last); err != nil {
+				return nil, err
+			}
+			t.First, t.Last = first.Unix(), last.Unix()
+			out = append(out, t)
 		}
 		for i := range out {
 			var unit sql.NullString
@@ -334,7 +366,12 @@ func (wa *WebAPI) seriesFor(name string, from, to time.Time, bucket string, loc 
 	if info.Kind == "category" {
 		val, cond = "TIMESTAMPDIFF(SECOND, start_date, end_date) / 60", ""
 	}
-	hours, err := wa.hourly(name, val, cond, from, to)
+	var hours []hourRow
+	if wa.hourly.has(name) {
+		hours, err = wa.hourlyRollup(name, from, to)
+	} else {
+		hours, err = wa.hourlySamples(name, val, cond, from, to)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -365,9 +402,28 @@ func (wa *WebAPI) sleepSeries(from, to time.Time, bucket string, loc *time.Locat
 	return reply, nil
 }
 
+// hourlyRollup reads the same groups from sample_hourly.
+func (wa *WebAPI) hourlyRollup(name string, from, to time.Time) ([]hourRow, error) {
+	rows, err := wa.db.Query(`SELECT hour, source_name, COALESCE(sum, 0), n, COALESCE(min, 0), COALESCE(max, 0) FROM sample_hourly
+		WHERE type = ? AND hour >= ? AND hour < ?`, name, from.Truncate(time.Hour), to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []hourRow
+	for rows.Next() {
+		var r hourRow
+		if err := rows.Scan(&r.Hour, &r.Source, &r.Sum, &r.N, &r.Min, &r.Max); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // hourly groups a type's samples by UTC hour and source. Hours are folded into local buckets in Go, which keeps time
 // zones right without MariaDB's time zone tables.
-func (wa *WebAPI) hourly(name, val, cond string, from, to time.Time) ([]hourRow, error) {
+func (wa *WebAPI) hourlySamples(name, val, cond string, from, to time.Time) ([]hourRow, error) {
 	q := fmt.Sprintf(`SELECT DATE_FORMAT(start_date, '%%Y-%%m-%%d %%H:00:00') AS h, COALESCE(source_name, ''),
 		SUM(%[1]s), COUNT(*), MIN(%[1]s), MAX(%[1]s)
 		FROM samples WHERE type = ? AND start_date >= ? AND start_date < ? %[2]s
@@ -729,6 +785,23 @@ func (wa *WebAPI) maxHR(r *http.Request, at time.Time) (float64, string, error) 
 		return mx.Float64, "observed", nil
 	}
 	return 0, "", nil
+}
+
+func queryStrings(db *sql.DB, q string, args ...any) ([]string, error) {
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 // queryMaps returns rows as column -> value maps ([]byte turned into strings or numbers).

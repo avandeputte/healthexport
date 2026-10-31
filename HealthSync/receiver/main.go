@@ -96,6 +96,7 @@ func main() {
 		log.Printf("WEB_PASSWORD is not set: the web app is open to anyone who can reach this port")
 	}
 	registerWeb(mux, web, newWebAuth(webPassword, token))
+	web.Backfill()
 
 	srv := &http.Server{
 		Addr:              env("LISTEN_ADDR", ":47800"),
@@ -189,6 +190,8 @@ func (a *API) items(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
+	rollupMu.Lock()
+	defer rollupMu.Unlock()
 	s := NewSession(a.db)
 	fresh, err := s.ClaimBatch(id, seq)
 	if errors.Is(err, sql.ErrNoRows) {
