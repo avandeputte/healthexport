@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Health Sync</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="vendor/uPlot.min.css">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/"><img src="favicon.svg" alt="" width="22" height="22"> Health Sync</a>
+  <nav id="nav">
+    <a href="#/" data-page="dashboard">Dashboard</a>
+    <a href="#/metrics" data-page="metrics">Metrics</a>
+    <a href="#/workouts" data-page="workouts">Workouts</a>
+    <a href="#/map" data-page="map">Map</a>
+    <a href="#/sleep" data-page="sleep">Sleep</a>
+    <a href="#/records" data-page="records">Records</a>
+    <a href="#/settings" data-page="settings">Settings</a>
+  </nav>
+  <span id="sync-status" class="muted small"></span>
+</header>
+<main id="app"><p class="muted">Loading…</p></main>
+<script src="vendor/uPlot.iife.min.js"></script>
+<script src="vendor/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

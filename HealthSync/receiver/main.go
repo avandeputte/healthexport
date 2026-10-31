@@ -1,5 +1,5 @@
-// Command healthsync-receiver accepts Health Sync uploads from the iPhone app over HTTP and writes them to MariaDB.
-// It serves plain HTTP for a reverse proxy that terminates TLS, or HTTPS itself when TLS_CERT_FILE and
+// Command healthsync-receiver accepts Health Sync uploads from the iPhone app over HTTP and writes them to MariaDB,
+// and serves a fitness web app (dashboards, charts, workout maps) on the same port. It serves plain HTTP for a reverse proxy that terminates TLS, or HTTPS itself when TLS_CERT_FILE and
 // TLS_KEY_FILE are set. The API is described in README.md.
 package main
 
@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata" // the distroless image has no zoneinfo; the web app buckets by the browser's time zone
 
 	"github.com/go-sql-driver/mysql"
 )
@@ -74,21 +75,27 @@ func main() {
 	if db, err = sql.Open("mysql", cfg.FormatDSN()); err != nil {
 		log.Fatal(err)
 	}
-	db.SetMaxOpenConns(4)
+	db.SetMaxOpenConns(8)
 	db.SetConnMaxIdleTime(5 * time.Minute)
 	if err := migrate(db); err != nil {
 		log.Fatalf("creating tables: %v", err)
 	}
 
-	api := &API{db: db}
+	web := NewWebAPI(db)
+	api := &API{db: db, onSync: web.SyncFinished}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", api.health)
 	mux.Handle("POST /v1/sessions", requireToken(token, api.start))
 	mux.Handle("POST /v1/sessions/{id}/items", requireToken(token, api.items))
 	mux.Handle("POST /v1/sessions/{id}/finish", requireToken(token, api.finish))
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, errors.New("not found"))
 	})
+	webPassword := os.Getenv("WEB_PASSWORD")
+	if webPassword == "" {
+		log.Printf("WEB_PASSWORD is not set: the web app is open to anyone who can reach this port")
+	}
+	registerWeb(mux, web, newWebAuth(webPassword, token))
 
 	srv := &http.Server{
 		Addr:              env("LISTEN_ADDR", ":47800"),
@@ -127,7 +134,10 @@ func healthcheck() int {
 	return 0
 }
 
-type API struct{ db *sql.DB }
+type API struct {
+	db     *sql.DB
+	onSync func() // after a sync finishes
+}
 
 // GET /v1/health, unauthenticated, for the proxy and the container healthcheck.
 func (a *API) health(w http.ResponseWriter, r *http.Request) {
@@ -256,6 +266,9 @@ func (a *API) finish(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if a.onSync != nil {
+		a.onSync()
 	}
 	log.Printf("session %d: finished, %d items sent; %d rows in the database", id, d.TotalSent, total)
 	writeJSON(w, http.StatusOK, map[string]int{"received": total})
