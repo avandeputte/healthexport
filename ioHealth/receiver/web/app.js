@@ -190,6 +190,9 @@ const TYPES = {
   uv_exposure: ['UV index', 0], swimming_stroke_count: ['Swimming strokes', 0], push_count: ['Wheelchair pushes', 0],
   underwater_depth: ['Underwater depth', 1], water_temperature: ['Water temperature', 1], workout_effort_score: ['Workout effort', 1],
   atrial_fibrillation_burden: ['AFib history', 1], electrodermal_activity: ['Electrodermal activity', 2],
+  activity_move: ['Move ring', 0], activity_move_goal: ['Move goal', 0], activity_move_percent: ['Move ring % of goal', 0],
+  activity_exercise: ['Exercise ring', 0], activity_exercise_goal: ['Exercise goal', 0], activity_exercise_percent: ['Exercise ring % of goal', 0],
+  activity_stand: ['Stand ring', 0], activity_stand_goal: ['Stand goal', 0], activity_stand_percent: ['Stand ring % of goal', 0],
 };
 const typeLabel = t => TYPES[t]?.[0] || t.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
 const typeDec = (t, unit) => /^mmol/i.test(unit || '') ? 1 : TYPES[t]?.[1] ?? 1;
@@ -473,6 +476,7 @@ function typeHidden(t) {
   if ((settings.hiddenTypes || []).includes(t)) return true;
   if (t === 'sleep_analysis' && !sectionOn('sleep')) return true;
   if (t === 'blood_glucose' && !sectionOn('glucose')) return true;
+  if (t.startsWith('activity_') && !sectionOn('activity')) return true;
   return false;
 }
 function applySections() {

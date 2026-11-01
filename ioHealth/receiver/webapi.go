@@ -268,6 +268,11 @@ func (wa *WebAPI) typeList() ([]typeInfo, error) {
 				out[i].Unit, out[i].Cumulative = "h", false
 			}
 		}
+		rings, err := wa.ringTypes()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rings...)
 		sort.Slice(out, func(i, j int) bool { return out[i].Type < out[j].Type })
 		return out, nil
 	})
@@ -336,6 +341,9 @@ func (wa *WebAPI) seriesFor(name string, from, to time.Time, bucket string, loc 
 	}
 	if name == "sleep_analysis" {
 		return wa.sleepSeries(from, to, bucket, loc)
+	}
+	if info.Kind == "ring" {
+		return wa.ringSeries(info, from, to, bucket, loc)
 	}
 	switch bucket {
 	case "raw":
