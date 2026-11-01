@@ -128,6 +128,13 @@ const fmtDate = t => t == null ? '—' : dateFmt.format(new Date(t * 1000));
 const fmtDateShort = t => dateShortFmt.format(new Date(t * 1000));
 const fmtDateTime = t => dateTimeFmt.format(new Date(t * 1000));
 const fmtTime = t => timeFmt.format(new Date(t * 1000));
+// 'today', 'yesterday', or the date (with the year when it isn't this year).
+function fmtDayAgo(t) {
+  const d = new Date(t * 1000), day = isoDate(d);
+  if (day === today()) return 'today';
+  if (day === daysAgo(1)) return 'yesterday';
+  return d.getFullYear() === new Date().getFullYear() ? fmtDateShort(t) : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}
 function fmtAgo(t) {
   const d = Date.now() / 1000 - t;
   if (d < 90) return 'just now';
@@ -596,9 +603,17 @@ pages.dashboard = async (main) => {
     const el = h('section', { class: 'card kpi', onclick: () => location.hash = t === 'blood_glucose' ? '#/glucose' : '#/metrics?types=' + t + '&range=90d' },
       h('div', { class: 'label' }, typeLabel(t)), h('div', { class: 'value' }, '…'));
     kpis.append(el);
-    api('series', { type: t, from: daysAgo(59), to: today(), bucket: 'day' }).then(sr => {
+    api('series', { type: t, from: daysAgo(59), to: today(), bucket: 'day' }).then(async sr => {
       const k = scaleFor(sr.unit), pts = sr.points;
-      if (!pts.length) { el.querySelector('.value').textContent = '—'; return; }
+      if (!pts.length) {
+        // Nothing in the last 60 days: show the latest reading, however old, with its date.
+        const lastDay = !info.cumulative && info.last ? isoDate(new Date(info.last * 1000)) : null;
+        const old = lastDay ? (await api('series', { type: t, from: lastDay, to: lastDay, bucket: 'day' })).points.at(-1) : null;
+        if (!old) { el.querySelector('.value').textContent = '—'; return; }
+        el.querySelector('.value').replaceChildren(fmtNum(old.v * k, typeDec(t)), h('small', {}, prettyUnit(info.unit === '%' ? '%' : sr.unit)));
+        el.append(h('div', { class: 'sub' }, 'last on ', fmtDayAgo(old.t), ' · none in 60 days'));
+        return;
+      }
       const byDay = new Map(pts.map(p => [isoDate(new Date(p.t * 1000)), p.v * k]));
       const vals = []; for (let i = 59; i >= 0; i--) vals.push(byDay.get(daysAgo(i)) ?? null);
       const last = pts[pts.length - 1];
@@ -611,7 +626,7 @@ pages.dashboard = async (main) => {
       const cls = delta == null || Math.abs(delta) < 2 ? 'flat' : (delta > 0) !== lowerIsBetter ? 'up' : 'down';
       const dec = t === 'blood_glucose' && /^mmol/i.test(sr.unit) ? 1 : typeDec(t);
       el.querySelector('.value').replaceChildren(fmtNum(headline, dec), h('small', {}, unit));
-      el.append(h('div', { class: 'sub' }, info.cumulative ? 'today' : (isoDate(new Date(last.t * 1000)) === today() ? 'today' : fmtDateShort(last.t)),
+      el.append(h('div', { class: 'sub' }, info.cumulative ? 'today' : fmtDayAgo(last.t),
         ' · 7-day avg ', fmtNum(recent, typeDec(t)), delta != null ? h('span', { class: cls }, ` ${delta > 0 ? '▲' : '▼'} ${fmtNum(Math.abs(delta), 0)}%`) : null),
       sparkline(vals, { bars: info.cumulative }));
     }).catch(e => el.append(h('div', { class: 'sub error' }, e.message)));
