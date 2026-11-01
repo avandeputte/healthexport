@@ -3,7 +3,7 @@ import Foundation
 /// Wire format between the iPhone and the Mac: newline-delimited JSON over a plain TCP connection
 /// that the Mac advertises on the local network with Bonjour. One `SyncMessage` per line.
 enum SyncProtocol {
-    static let bonjourType = "_healthsync._tcp"
+    static let bonjourType = "_iohealth._tcp"
     /// Fixed so the Mac can be reached by typed-in address as well as by Bonjour.
     static let defaultPort: UInt16 = 47800
     static let version = 1

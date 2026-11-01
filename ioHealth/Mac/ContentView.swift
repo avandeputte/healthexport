@@ -5,7 +5,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Health Sync").font(.title.bold())
+            Text("ioHealth Receiver").font(.title.bold())
 
             GroupBox("Database") {
                 HStack {
@@ -31,7 +31,7 @@ struct ContentView: View {
                         }
                     }
                     LabeledContent("Last sync", value: model.lastSync.isEmpty ? "Never" : model.lastSync)
-                    Toggle("Open Health Sync at login, so background syncs from the phone always find it", isOn: $model.launchAtLogin)
+                    Toggle("Open ioHealth Receiver at login, so background syncs from the phone always find it", isOn: $model.launchAtLogin)
                     Toggle("Write CSV files after each sync", isOn: $model.writeCSVAfterSync)
                     HStack {
                         Button("Export CSV now") { model.exportCSV() }
@@ -63,9 +63,9 @@ struct ContentView: View {
     @ViewBuilder private var statusLine: some View {
         switch model.status {
         case .needsDatabase:
-            Label("Click New… to create a database, then open Health Sync on your iPhone.", systemImage: "1.circle")
+            Label("Click New… to create a database, then open ioHealth on your iPhone.", systemImage: "1.circle")
         case .waiting(let port):
-            Label("Waiting for your iPhone (port \(port)). Open Health Sync on the phone and tap this Mac, or type the address below into it.", systemImage: "wifi")
+            Label("Waiting for your iPhone (port \(port)). Open ioHealth on the phone and tap this Mac, or type the address below into it.", systemImage: "wifi")
         case .receiving(let peer):
             VStack(alignment: .leading) {
                 HStack { ProgressView().controlSize(.small); Text("Receiving from \(peer)…") }

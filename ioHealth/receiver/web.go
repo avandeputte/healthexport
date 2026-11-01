@@ -22,7 +22,7 @@ import (
 //go:embed web
 var webFiles embed.FS
 
-const sessionCookie = "healthsync_session"
+const sessionCookie = "iohealth_session"
 
 type webAuth struct {
 	password string // empty: no login

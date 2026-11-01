@@ -41,7 +41,7 @@ struct ContentView: View {
                 } header: {
                     Text("Server")
                 } footer: {
-                    Text("The Health Sync receiver's address, e.g. https://health.example.com behind your reverse proxy, or http://192.168.1.10:47800 on your own network (plain http only works for local addresses). The token is SYNC_TOKEN from the receiver's .env and is kept in the iPhone's Keychain.")
+                    Text("The ioHealth server's address, e.g. https://health.example.com behind your reverse proxy, or http://192.168.1.10:47800 on your own network (plain http only works for local addresses). The token is SYNC_TOKEN from the receiver's .env and is kept in the iPhone's Keychain.")
                 }
 
                 Section {
@@ -84,7 +84,7 @@ struct ContentView: View {
                 }
 
             }
-            .navigationTitle("Health Sync")
+            .navigationTitle("ioHealth")
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { autoSyncOnOpen() }

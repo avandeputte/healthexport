@@ -1,7 +1,7 @@
-# Health Sync
+# ioHealth
 
 Copies your Apple Health data, all of it or just the types you pick, into your own MariaDB database, and gives you a
-fitness web app, **ioHealth**, on top of it: dashboards, charts of any metric (stacked or overlaid), workouts with their GPS routes on
+fitness web app on top of it: dashboards, charts of any metric (stacked or overlaid), workouts with their GPS routes on
 a map, sleep, training load and personal records. Nothing goes through a cloud service: an iPhone app uploads straight
 to a small receiver that you run in Docker, over HTTPS behind your reverse proxy (or plain HTTP on your own network).
 The same container serves the web app.
@@ -11,23 +11,24 @@ why there are two parts:
 
 ```
 ┌──────────────┐   HTTPS (REST, gzip NDJSON)   ┌───────────────┐        ┌──────────┐
-│  Health Sync │ ────────────────────────────▶ │ reverse proxy │ ─────▶ │ receiver │ ──▶ MariaDB
+│   ioHealth   │ ────────────────────────────▶ │ reverse proxy │ ─────▶ │ receiver │ ──▶ MariaDB
 │  (iPhone)    │                               │ (TLS)         │  HTTP  │ (Docker) │
 └──────────────┘                               └───────────────┘        └──────────┘
 ```
 
 | path | what |
 |---|---|
-| `HealthSync/receiver/` | Go service, shipped as a Docker image, that receives the uploads, writes MariaDB and serves the web app (`web/`) |
-| `HealthSync/iOS/` | the iPhone app |
-| `HealthSync/Shared/` | the upload line format (`SyncProtocol.swift`) shared by the apps |
-| `HealthSync/Mac/`, `HealthSync/ExportImporter/` | legacy macOS tools (a SQLite receiver the phone no longer talks to, and an importer for the Health app's `export.zip`) |
-| `HealthSync/project.yml` | [XcodeGen](https://github.com/yonaskolb/XcodeGen) spec that generates the Xcode project |
+| `ioHealth/receiver/` | Go service, shipped as a Docker image, that receives the uploads, writes MariaDB and serves the web app (`web/`) |
+| `ioHealth/iOS/` | the iPhone app |
+| `ioHealth/Shared/` | the upload line format (`SyncProtocol.swift`) shared by the apps |
+| `ioHealth/Mac/`, `ioHealth/ExportImporter/` | legacy macOS tools (a SQLite receiver the phone no longer talks to, and an importer for the Health app's `export.zip`) |
+| `ioHealth/project.yml` | [XcodeGen](https://github.com/yonaskolb/XcodeGen) spec that generates the Xcode project |
 | `.github/workflows/receiver-image.yml` | builds and publishes the receiver image |
 
 ## 1. Run the receiver (Docker)
 
-The receiver is published as `ghcr.io/avandeputte/healthexport-receiver` (public, `linux/amd64` and `linux/arm64`).
+The receiver is published as `ghcr.io/avandeputte/iohealth` (public, `linux/amd64` and `linux/arm64`). Versions up to
+1.1.1 were published as `ghcr.io/avandeputte/healthexport-receiver`; to upgrade, change the `image:` line and pull.
 Tags: `latest` (current `main`), `1.0.0` and other release versions, and one tag per branch while it's being worked on.
 It needs an existing MariaDB (or MySQL) server; it creates the database if the user may, and creates and migrates its
 own tables.
@@ -55,12 +56,12 @@ The container listens on port **47800**, for both the phone's uploads (`/v1/…`
 ### With Docker Compose (recommended)
 
 Save this as `docker-compose.yml`, fill in the values, and run `docker compose up -d`. Every option the receiver
-understands is listed (the same file is in the repo as `HealthSync/receiver/docker-compose.ghcr.yml`):
+understands is listed (the same file is in the repo as `ioHealth/receiver/docker-compose.ghcr.yml`):
 
 ```yaml
 services:
   receiver:
-    image: ghcr.io/avandeputte/healthexport-receiver:latest   # or a version such as 1.0.0
+    image: ghcr.io/avandeputte/iohealth:latest   # or a version such as 1.0.0
     container_name: health-receiver
     restart: unless-stopped
     ports:
@@ -104,12 +105,12 @@ Update later with `docker compose pull && docker compose up -d`.
 <summary>Keeping the secrets in a <code>.env</code> file instead</summary>
 
 If you'd rather not have the password and token inside the compose file, replace the `environment:` block with
-`env_file: .env` and put the settings in a `.env` next to it (`HealthSync/receiver/.env.example` is a template):
+`env_file: .env` and put the settings in a `.env` next to it (`ioHealth/receiver/.env.example` is a template):
 
 ```yaml
 services:
   receiver:
-    image: ghcr.io/avandeputte/healthexport-receiver:latest
+    image: ghcr.io/avandeputte/iohealth:latest
     container_name: health-receiver
     restart: unless-stopped
     ports:
@@ -145,7 +146,7 @@ WEB_PASSWORD=change-me-too
 docker run -d --name health-receiver --restart unless-stopped -p 47800:47800 \
   -e DB_HOST=192.168.1.10 -e DB_USER=health -e DB_PASSWORD=change-me -e DB_NAME=health \
   -e SYNC_TOKEN=change-me-to-a-long-random-string -e WEB_PASSWORD=change-me-too \
-  ghcr.io/avandeputte/healthexport-receiver:latest
+  ghcr.io/avandeputte/iohealth:latest
 docker logs -f health-receiver
 ```
 
@@ -153,7 +154,7 @@ docker logs -f health-receiver
 
 ### Building it yourself
 
-From a clone, `cd HealthSync/receiver && docker compose up -d` builds the image locally instead of pulling it
+From a clone, `cd ioHealth/receiver && docker compose up -d` builds the image locally instead of pulling it
 (`docker-compose.yml` has `build: .`). `go test ./...` runs the receiver's tests.
 
 ### HTTPS
@@ -195,18 +196,18 @@ works, but the app then has to be re-installed every 7 days).
 
 ```sh
 brew install xcodegen        # once
-git clone https://github.com/avandeputte/healthexport && cd healthexport/HealthSync
+git clone https://github.com/avandeputte/ioHealth && cd ioHealth/ioHealth
 xcodegen generate
-open HealthSync.xcodeproj
+open ioHealth.xcodeproj
 ```
 
-In Xcode select the **HealthSync** target → *Signing & Capabilities* → pick your Team (HealthKit and background
+In Xcode select the **ioHealth** target → *Signing & Capabilities* → pick your Team (HealthKit and background
 delivery are already enabled through the entitlements in `project.yml`), plug in your iPhone, choose it as the run
 destination, and run.
 
 ## 3. Use it
 
-1. On the iPhone, open **Health Sync**, tap **Allow access to Health data**, and on Apple's permission screen turn
+1. On the iPhone, open **ioHealth**, tap **Allow access to Health data**, and on Apple's permission screen turn
    everything on. (What you actually sync is chosen separately in step 3, without asking again.)
 2. Under **Server**, enter the receiver's URL (`https://health.example.com`, or `http://192.168.1.10:47800` at home)
    and the token (`SYNC_TOKEN` from the receiver's `.env`; it's kept in the iPhone's Keychain). **Test connection**
@@ -224,9 +225,9 @@ while the phone is unlocked) plus an occasional background-refresh slot. The rec
 moment; a missed or cut-short round costs nothing, because anchors only advance for batches the server has
 acknowledged.
 
-## 4. The web app: ioHealth
+## 4. The web app
 
-**ioHealth** is the fitness web app built into the receiver. Open the receiver's address in a browser (`https://health.example.com` or `http://192.168.1.10:47800`) and sign in
+The fitness web app is built into the receiver. Open the receiver's address in a browser (`https://health.example.com` or `http://192.168.1.10:47800`) and sign in
 with `WEB_PASSWORD` (the session lasts 30 days; changing the password or `SYNC_TOKEN` signs everyone out). It reads the
 database only, and shows new data as soon as a sync finishes.
 
@@ -315,7 +316,7 @@ with 400, 401, 404 or 413.
 |---|---|---|
 | `GET /v1/health` | | `{"ok":true,"schemaVersion":N}` |
 | `POST /v1/sessions` | `{"deviceName","systemVersion","fullResync"}` | 201 `{"sessionId":N}` |
-| `POST /v1/sessions/{id}/items` | NDJSON lines as in `HealthSync/Shared/SyncProtocol.swift`, optionally `Content-Encoding: gzip`; header `X-Batch-Seq: n` | `{"applied":k}` |
+| `POST /v1/sessions/{id}/items` | NDJSON lines as in `ioHealth/Shared/SyncProtocol.swift`, optionally `Content-Encoding: gzip`; header `X-Batch-Seq: n` | `{"applied":k}` |
 | `POST /v1/sessions/{id}/finish` | `{"totalSent":N}` | `{"received":rows}` |
 
 Each batch is committed in one transaction together with its sequence number, so a batch resent after a lost reply is

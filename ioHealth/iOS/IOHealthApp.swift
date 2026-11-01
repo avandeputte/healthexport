@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct HealthSyncApp: App {
+struct IOHealthApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {

@@ -1,6 +1,6 @@
-# XcodeGen spec. Run `xcodegen generate` in this folder to produce HealthSync.xcodeproj.
+# XcodeGen spec. Run `xcodegen generate` in this folder to produce ioHealth.xcodeproj.
 # (brew install xcodegen). Or build the project by hand; see README.
-name: HealthSync
+name: ioHealth
 options:
   bundleIdPrefix: com.avandeputte
   deploymentTarget:
@@ -13,7 +13,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: 69M2JRAT8P
 targets:
-  HealthSync:
+  ioHealth:
     type: application
     platform: iOS
     sources:
@@ -21,7 +21,7 @@ targets:
         excludes: ["*.entitlements"]
       - Shared/SyncProtocol.swift
     entitlements:
-      path: iOS/HealthSync.entitlements
+      path: iOS/ioHealth.entitlements
       properties:
         com.apple.developer.healthkit: true
         com.apple.developer.healthkit.access: []
@@ -29,9 +29,10 @@ targets:
     info:
       path: iOS/Info.plist
       properties:
-        NSHealthShareUsageDescription: Health Sync reads your Health data so it can be copied to your own Mac.
-        NSHealthUpdateUsageDescription: Health Sync never writes to Health.
-        NSLocalNetworkUsageDescription: Health Sync sends your Health data to your own server, which may be on your local network.
+        CFBundleDisplayName: ioHealth
+        NSHealthShareUsageDescription: ioHealth reads your Health data so it can be copied to your own server.
+        NSHealthUpdateUsageDescription: ioHealth never writes to Health.
+        NSLocalNetworkUsageDescription: ioHealth sends your Health data to your own server, which may be on your local network.
         # https everywhere, except plain http to local addresses (e.g. http://192.168.1.10:47800).
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
@@ -41,10 +42,12 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
     settings:
       base:
+        # Kept from the app's old name, Health Sync: a new bundle ID would be a new app to iOS, losing the saved token,
+        # sync history and Health permissions.
         PRODUCT_BUNDLE_IDENTIFIER: com.avandeputte.healthsync
         TARGETED_DEVICE_FAMILY: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-  HealthSyncMac:
+  ioHealthMac:
     type: application
     platform: macOS
     sources:
@@ -56,17 +59,17 @@ targets:
     info:
       path: Mac/Info.plist
       properties:
-        NSLocalNetworkUsageDescription: Health Sync receives your Health data from your iPhone over the local network.
-        NSBonjourServices: [_healthsync._tcp]
+        NSLocalNetworkUsageDescription: ioHealth receives your Health data from your iPhone over the local network.
+        NSBonjourServices: [_iohealth._tcp]
         LSApplicationCategoryType: public.app-category.healthcare-fitness
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.avandeputte.healthsync.mac
-        PRODUCT_NAME: Health Sync
+        PRODUCT_NAME: ioHealth Receiver
         OTHER_LDFLAGS: -lsqlite3
         ENABLE_APP_SANDBOX: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-  HealthExportImporter:
+  ioHealthImporter:
     type: application
     platform: macOS
     sources:
@@ -79,6 +82,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.avandeputte.healthexport.importer
-        PRODUCT_NAME: Health Export Importer
+        PRODUCT_NAME: ioHealth Importer
         OTHER_LDFLAGS: -lsqlite3
         ENABLE_APP_SANDBOX: NO

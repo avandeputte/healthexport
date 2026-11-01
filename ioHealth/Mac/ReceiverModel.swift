@@ -38,7 +38,7 @@ final class ReceiverModel: ObservableObject {
     private var database: SyncDatabase?
     private var server: SyncServer?
     /// Every use of `database` after it's opened goes through this queue: the SQLite wrapper is single-threaded.
-    private let dbQueue = DispatchQueue(label: "HealthSync.db")
+    private let dbQueue = DispatchQueue(label: "ioHealth.db")
 
     init() {
         if let path = UserDefaults.standard.string(forKey: "databasePath") {

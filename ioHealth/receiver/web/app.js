@@ -43,13 +43,13 @@ function cssVar(name) { return getComputedStyle(document.documentElement).getPro
 
 const settings = (() => {
   const defaults = { units: 'metric', maxHr: '', theme: 'auto', glucoseUnit: '', glucoseLow: '70', glucoseHigh: '180', hiddenSections: [], hiddenTypes: [] };
-  try { return Object.assign(defaults, JSON.parse(localStorage.getItem('healthsync.settings') || '{}')); } catch { return defaults; }
+  try { return Object.assign(defaults, JSON.parse(localStorage.getItem('iohealth.settings') || '{}')); } catch { return defaults; }
 })();
 // Settings live in the database (web_settings), shared by every browser; the copy in localStorage only makes the
 // theme right before the server answers.
 let settingsTimer;
 function saveSettings() {
-  try { localStorage.setItem('healthsync.settings', JSON.stringify(settings)); } catch { /* private mode */ }
+  try { localStorage.setItem('iohealth.settings', JSON.stringify(settings)); } catch { /* private mode */ }
   clearTimeout(settingsTimer);
   settingsTimer = setTimeout(() => fetch('api/settings', { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings) }).catch(e => console.error('saving settings', e)), 300);
