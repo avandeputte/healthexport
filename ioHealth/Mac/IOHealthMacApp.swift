@@ -1,11 +1,11 @@
 import SwiftUI
 
 @main
-struct HealthSyncMacApp: App {
+struct IOHealthMacApp: App {
     @StateObject private var model = ReceiverModel()
 
     var body: some Scene {
-        WindowGroup("Health Sync") {
+        WindowGroup("ioHealth Receiver") {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 620, minHeight: 440)

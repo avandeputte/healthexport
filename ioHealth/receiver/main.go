@@ -1,4 +1,4 @@
-// Command healthsync-receiver accepts Health Sync uploads from the iPhone app over HTTP and writes them to MariaDB,
+// Command iohealth accepts ioHealth uploads from the iPhone app over HTTP and writes them to MariaDB,
 // and serves a fitness web app (dashboards, charts, workout maps) on the same port. It serves plain HTTP for a reverse proxy that terminates TLS, or HTTPS itself when TLS_CERT_FILE and
 // TLS_KEY_FILE are set. The API is described in README.md.
 package main

@@ -1,9 +1,9 @@
-# Health Sync receiver and web app, every option, with the values written in. Pulls the published image; no checkout needed.
+# ioHealth server (iPhone upload receiver and web app), every option, with the values written in. Pulls the published image; no checkout needed.
 #   docker compose -f docker-compose.ghcr.yml up -d
 #   docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d   # update
 services:
   receiver:
-    image: ghcr.io/avandeputte/healthexport-receiver:latest   # or a version such as 1.0.0
+    image: ghcr.io/avandeputte/iohealth:latest   # or a version such as 1.0.0
     container_name: health-receiver
     restart: unless-stopped
     ports:

@@ -65,7 +65,7 @@ final class SyncEngine: ObservableObject {
         if let last = lastBackgroundAttempt, Date().timeIntervalSince(last) < 10 * 60 { return }
         lastBackgroundAttempt = Date()
         // iOS calls the expiration handler on the main thread.
-        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "HealthSync") { [weak self] in
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "ioHealth") { [weak self] in
             MainActor.assumeIsolated { self?.endBackgroundTask() }
         }
         await syncNow(trigger: trigger, deadline: Date().addingTimeInterval(22))

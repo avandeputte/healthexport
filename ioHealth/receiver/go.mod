@@ -1,4 +1,4 @@
-module healthsync-receiver
+module iohealth
 
 go 1.26.2
 

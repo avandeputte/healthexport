@@ -175,7 +175,8 @@ enum Gzip {
 /// The access token lives in the Keychain, readable after first unlock so background syncs can use it.
 enum TokenStore {
     private static let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                               kSecAttrService as String: "HealthSync", kSecAttrAccount as String: "syncToken"]
+                                               kSecAttrService as String: "HealthSync", // the old app name; kept so the saved token is still found
+                                               kSecAttrAccount as String: "syncToken"]
 
     static var token: String {
         get {

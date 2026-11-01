@@ -1,4 +1,4 @@
-# Health Sync receiver: the iPhone app uploads over HTTP(S) to port 47800 and everything is written to your MariaDB
+# ioHealth server: the iPhone app uploads over HTTP(S) to port 47800 and everything is written to your MariaDB
 # server. The web app is on the same port (http://localhost:47800/). Put the settings in .env (copy .env.example), then: docker compose up -d
 # For HTTPS, put it behind your reverse proxy (see README.md), or set TLS_CERT_FILE/TLS_KEY_FILE and mount the files.
 services:

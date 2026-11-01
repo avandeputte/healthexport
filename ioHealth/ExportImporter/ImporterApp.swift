@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 @main
 struct ImporterApp: App {
     var body: some Scene {
-        WindowGroup("Health Export Importer") {
+        WindowGroup("ioHealth Importer") {
             ImporterView()
                 .frame(minWidth: 560, minHeight: 380)
         }
