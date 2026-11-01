@@ -271,7 +271,8 @@ const autoGroups = new Map();
 function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt, xIncrs, xSpace, bands, legend = true, yRange, hooks, axisFmt, incrs, zoom = true }) {
   const muted = cssVar('--muted'), line = cssVar('--line');
   const scales = { x: { time: xTime } };
-  const axes = [{ stroke: muted, grid: { stroke: line, width: 1 }, ticks: { stroke: line }, values: xFmt, incrs: xIncrs, space: xSpace }];
+  const axes = [{ stroke: muted, grid: { stroke: line, width: 1 }, ticks: { stroke: line }, values: xFmt, incrs: xIncrs }];
+  if (xSpace) axes[0].space = xSpace; // an undefined space would replace uPlot's default and drop every label
   const useries = [{ label: xTime ? 'Time' : '', value: xTime ? (u, v) => v == null ? '' : fmtDateTime(v) : (u, v) => v == null ? '' : (xFmt ? xFmt(u, [v])[0] : v) }];
   const seen = [];
   for (const sr of series) {
@@ -1736,6 +1737,31 @@ function rangeLegend(r, target) {
   return h('div', { class: 'legend' }, GLUCOSE_BANDS.map(([k, label, color]) => h('span', {}, h('i', { style: { background: color } }), `${label} ${labels[k]}: `, h('b', {}, pct(r[k])))));
 }
 
+// glucoseLine: readings as [times, values] with a gap (null) wherever readings stop for more than 20 minutes
+// (a sensor change, or no CGM), so the line isn't drawn straight across the missing time.
+function glucoseLine(readings) {
+  const xs = [], ys = [];
+  readings.forEach((r, i) => {
+    // A null at each end of the gap, so points of other series joined in between can't bridge it.
+    if (i && r[0] - readings[i - 1][0] > 1200) { xs.push(readings[i - 1][0] + 300, r[0] - 300); ys.push(null, null); }
+    xs.push(r[0]); ys.push(gVal(r[1]));
+  });
+  return [xs, ys];
+}
+
+// keepGaps: after joining other series onto a glucose line, the glucose column has no value at their times; inside a
+// gap (between the nulls glucoseLine put there) those become null too, so the line can't bridge the gap through them.
+function keepGaps(data) {
+  const col = data[1];
+  let inGap = false;
+  for (let i = 0; i < col.length; i++) {
+    if (col[i] === null) inGap = !inGap; // nulls come in pairs: where a gap starts and where it ends
+    else if (col[i] === undefined) { if (inGap) col[i] = null; }
+    else inGap = false;
+  }
+  return data;
+}
+
 // Shades the target range (and optionally workouts) behind a chart whose glucose scale is 'g'.
 function glucoseBackdrop(target, workouts = []) {
   return u => {
@@ -1819,13 +1845,13 @@ pages.glucose = async (main, _, params) => {
     const overlaysFor = (a, b) => Promise.all(state.overlays.map(t => api('series', { type: t, from: a, to: b, bucket: isCumulativeType(types, t) && bucket === 'raw' ? 'hour' : bucket }).catch(() => null)));
     const defs = [];
     const joinData = (readings, overlayData) => {
-      const tables = [[readings.map(r => r[0]), readings.map(r => gVal(r[1]))]];
+      const tables = [glucoseLine(readings)];
       state.overlays.forEach((t, k) => {
         const sr = overlayData[k], d = defs.find(d => d.t === t);
         if (!d) return;
         tables.push(sr && sr.points.length ? [sr.points.map(p => p.t), sr.points.map(p => p.v * scaleFor(sr.unit))] : [[readings[0]?.[0] ?? 0], [null]]);
       });
-      return tables.length > 1 ? uPlot.join(tables) : tables[0];
+      return tables.length > 1 ? keepGaps(uPlot.join(tables, tables.map((t, i) => [0, i ? 0 : 1]))) : tables[0];
     };
     const fromT = days === 1 ? +from : Math.floor(new Date(from + 'T00:00:00').getTime() / 1000), nowT = Math.floor(Date.now() / 1000);
     const overlayData = await overlaysFor(fromT, nowT);
@@ -2027,8 +2053,9 @@ async function workoutGlucose(w) {
     stat('Before', fmtG(r.base), gUnit()), stat('Change by the end', fmtDelta(r.at(endM) == null ? null : r.at(endM) - r.base), gUnit()),
     stat('Lowest', fmtG(Math.min(...r.within(0, endM + 60))), gUnit()), stat('1 h after the end', fmtDelta(r.at(endM + 60) == null ? null : r.at(endM + 60) - r.base), gUnit())) : null,
   el, h('p', { class: 'small muted' }, 'From an hour before to two hours after. Orange: the workout. Green band: target range.'));
-  return [c, () => chart(el, { xs: rt, height: 240, hooks: { drawClear: [glucoseBackdrop(g.target, [w])] },
-    series: [{ label: 'Glucose', color: '#e8445a', scale: 'g', unit: gUnit(), dec: mmol() ? 1 : 0, values: rv.map(gVal), spanGaps: false, points: rt.length < 60, axisFmt: v => fmtNum(v, mmol() ? 1 : 0) }] })];
+  const line = glucoseLine(g.readings);
+  return [c, () => chart(el, { xs: line[0], height: 240, hooks: { drawClear: [glucoseBackdrop(g.target, [w])] },
+    series: [{ label: 'Glucose', color: '#e8445a', scale: 'g', unit: gUnit(), dec: mmol() ? 1 : 0, values: line[1], spanGaps: false, points: rt.length < 60, axisFmt: v => fmtNum(v, mmol() ? 1 : 0) }] })];
 }
 
 // ---------- records ----------
@@ -2163,9 +2190,9 @@ pages.day = async (main, arg) => {
     const el = h('div', { class: 'chart' });
     add('Blood glucose', el);
     const carbPts = (carbs?.points || []);
-    const tables = [[gl.readings.map(r => r[0]), gl.readings.map(r => gVal(r[1]))]];
+    const tables = [glucoseLine(gl.readings)];
     if (carbPts.length) tables.push([carbPts.map(p => p.t), carbPts.map(p => p.v)]);
-    const d = tables.length > 1 ? uPlot.join(tables) : tables[0];
+    const d = tables.length > 1 ? keepGaps(uPlot.join(tables, [[0, 1], [0, 0]])) : tables[0];
     later.push(() => chart(el, { xs: d[0], height: 240, xRange: xr, ...hourAxis, sync: 'day', hooks: { drawClear: [glucoseBackdrop(gl.target), backdrop] }, series: [
       { label: 'Glucose', color: '#e8445a', scale: 'g', unit: gUnit(), dec: mmol() ? 1 : 0, values: d[1], spanGaps: false, points: gl.readings.length < 60, axisFmt: v => fmtNum(v, mmol() ? 1 : 0) },
       ...(carbPts.length ? [{ label: 'Carbs', color: '#f59e0b', fill: '#f59e0b99', scale: 'carbs', unit: 'g', dec: 0, values: d[2], bars: true, barMax: 8 }] : []),
