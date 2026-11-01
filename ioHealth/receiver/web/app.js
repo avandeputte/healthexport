@@ -424,11 +424,12 @@ function stackedBars(el, { xs, stacks, height = 240, unit = '', dec = 0, axisFmt
   return chart(el, { xs, series, height, axisFmt: axisFmt || fmtCompact, xFmt, sync, incrs, yRange: (u, mn, mx) => [0, (mx || 1) * 1.08] });
 }
 
-function sparkline(values, { w = 190, h: ht = 38, color = cssVar('--accent'), bars = false } = {}) {
+function sparkline(values, { w = 190, h: ht = 38, color = cssVar('--accent'), bars = false, goal = null } = {}) {
   const pts = values.map((v, i) => [i, v]).filter(p => p[1] != null && isFinite(p[1]));
   const svg = s('svg', { width: '100%', height: ht, viewBox: `0 0 ${w} ${ht}`, preserveAspectRatio: 'none' });
   if (pts.length < 2) return svg;
   const ys = pts.map(p => p[1]);
+  if (goal != null && isFinite(goal)) ys.push(goal);
   let mn = Math.min(...ys), mx = Math.max(...ys);
   if (bars) mn = 0;
   if (mx === mn) { mx += 1; mn -= 1; }
@@ -439,6 +440,7 @@ function sparkline(values, { w = 190, h: ht = 38, color = cssVar('--accent'), ba
   } else {
     svg.append(s('path', { d: pts.map((p, k) => (k ? 'L' : 'M') + X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1)).join(''), fill: 'none', stroke: color, 'stroke-width': 1.8, 'vector-effect': 'non-scaling-stroke' }));
   }
+  if (goal != null && isFinite(goal)) svg.append(s('line', { x1: 0, x2: w, y1: Y(goal), y2: Y(goal), stroke: cssVar('--good'), 'stroke-width': 1.2, 'stroke-dasharray': '4 3', 'vector-effect': 'non-scaling-stroke' }));
   return svg;
 }
 
@@ -572,7 +574,10 @@ async function render() {
   resetPage();
   const r = route();
   const pageName = r.page === 'workout' ? 'workouts' : r.page;
-  for (const a of document.querySelectorAll('#nav a')) a.classList.toggle('active', a.dataset.page === pageName);
+  for (const a of document.querySelectorAll('#nav a')) {
+    a.classList.toggle('active', a.dataset.page === pageName);
+    if (a.dataset.page === pageName) a.parentElement.scrollLeft = Math.max(0, a.offsetLeft - 40); // phones: the menu scrolls sideways
+  }
   const main = $('#app');
   loading(main);
   window.scrollTo(0, 0);
@@ -610,7 +615,20 @@ pages.dashboard = async (main) => {
   const workoutsCard = card('Recent workouts');
   const weeklyCard = card('Training volume, last 12 weeks');
   const glucoseCard = types.blood_glucose && sectionOn('glucose') ? card('Blood glucose, last 14 days') : null;
-  main.append(h('h1', {}, 'Dashboard'), top.children.length ? top : null, glucoseCard, h('div', { style: { height: '16px' } }), kpis,
+  const alertList = h('div', { class: 'alerts' });
+  const alertsCard = card('Heads-up', alertList);
+  alertsCard.hidden = true;
+  alertsCard.style.marginBottom = '16px';
+  // level: good, warn or bad; shown most serious first.
+  const addAlert = (level, text, href) => {
+    alertsCard.hidden = false;
+    const el = h('div', { class: 'alert ' + level, 'data-rank': { bad: 0, warn: 1, good: 2 }[level] }, h('span', {}, { bad: '⚠️', warn: '⚠️', good: '✅' }[level]), h('span', {}, text),
+      href ? h('a', { href, class: 'small noprint' }, 'Look →') : null);
+    const after = [...alertList.children].find(c => +c.dataset.rank > +el.dataset.rank);
+    alertList.insertBefore(el, after || null);
+  };
+  main.append(h('div', { class: 'row spread' }, h('h1', {}, 'Dashboard'), h('a', { href: '#/day', class: 'small' }, 'Today in detail →')), alertsCard,
+    top.children.length ? top : null, glucoseCard, h('div', { style: { height: '16px' } }), kpis,
     show.workouts ? h('div', { class: 'grid cols-2' }, workoutsCard, weeklyCard) : null);
 
   // Rings: today big, the week small.
@@ -654,8 +672,10 @@ pages.dashboard = async (main) => {
     h('p', { class: 'small muted' }, `Night of ${last.date} · `, h('a', { href: '#/sleep' }, 'Sleep details')));
   }).catch(e => sleepCard.append(h('p', { class: 'error' }, e.message)));
 
-  // KPI cards
-  const shown = DASH_KPIS.filter(t => types[t]);
+  dashboardAlerts(types, addAlert);
+
+  // KPI cards: the usual ones plus any metric with a goal.
+  const shown = [...new Set([...DASH_KPIS, ...(settings.goals || []).map(g => g.type)])].filter(t => types[t]);
   if (!shown.length) kpis.append(card(null, empty('No samples yet. Sync from the iPhone app and they show up here.')));
   for (const t of shown) {
     const info = types[t];
@@ -681,13 +701,16 @@ pages.dashboard = async (main) => {
       const unit = prettyUnit(info.unit === '%' ? '%' : sr.unit);
       const headline = info.cumulative ? (byDay.get(today()) ?? 0) : last.v * k;
       const delta = recent != null && before ? (recent - before) / Math.abs(before) * 100 : null;
+      const goal = goalFor(t);
+      if (goal) goalNotes(t, goal, info, vals, last.v * k, unit, el, addAlert);
       const lowerIsBetter = ['resting_heart_rate', 'walking_heart_rate_average', 'respiratory_rate'].includes(t);
       const cls = delta == null || Math.abs(delta) < 2 ? 'flat' : (delta > 0) !== lowerIsBetter ? 'up' : 'down';
       const dec = t === 'blood_glucose' && /^mmol/i.test(sr.unit) ? 1 : typeDec(t);
       el.querySelector('.value').replaceChildren(fmtNum(headline, dec), h('small', {}, unit));
       el.append(h('div', { class: 'sub' }, info.cumulative ? 'today' : fmtDayAgo(last.t),
         ' · 7-day avg ', fmtNum(recent, typeDec(t)), delta != null ? h('span', { class: cls }, ` ${delta > 0 ? '▲' : '▼'} ${fmtNum(Math.abs(delta), 0)}%`) : null),
-      sparkline(vals, { bars: info.cumulative }));
+      sparkline(vals, { bars: info.cumulative, goal: goal ? +goal.value : null }));
+      if (goal) el.append(el.querySelector('.goal-note'));
     }).catch(e => el.append(h('div', { class: 'sub error' }, e.message)));
   }
 
@@ -700,6 +723,80 @@ pages.dashboard = async (main) => {
     weeklyChart(chartEl, ws, 12);
   }).catch(e => workoutsCard.append(h('p', { class: 'error' }, e.message)));
 };
+
+// goalNotes adds a goal line to a dashboard card and raises streaks, misses and trends as alerts. vals are the last
+// 60 days (today last) in the units shown.
+function goalNotes(t, goal, info, vals, latest, unit, el, addAlert) {
+  const label = typeLabel(t), target = +goal.value, dec = typeDec(t);
+  const word = goal.dir === 'max' ? 'at most' : 'at least';
+  const note = h('div', { class: 'sub goal-note' });
+  el.append(note);
+  const daily = info.cumulative || info.kind === 'ring' || t === 'sleep_analysis';
+  if (daily) {
+    const todayMet = goalMet(goal, vals[vals.length - 1]);
+    const past = vals.slice(0, -1);
+    const met7 = past.slice(-7).filter(v => goalMet(goal, v)).length;
+    let streak = 0;
+    for (let i = past.length - 1; i >= 0 && goalMet(goal, past[i]); i--) streak++;
+    if (todayMet) streak++;
+    note.append(`Goal ${word} ${fmtNum(target, dec)} · met ${met7} of the last 7 days`, streak >= 2 ? ` · ${streak}-day streak` : '');
+    if (streak >= 3) addAlert('good', `${label}: goal met ${streak} days in a row.`, '#/metrics?types=' + t + '&range=30d');
+    else if (past.slice(-3).length === 3 && past.slice(-3).every(v => v != null && !goalMet(goal, v)) && !todayMet)
+      addAlert('warn', `${label}: goal (${word} ${fmtNum(target, dec)}) missed the last 3 days.`, '#/metrics?types=' + t + '&range=30d');
+    return;
+  }
+  // A level to reach (weight, resting heart rate…): how far, and whether the 30-day trend heads there.
+  if (goalMet(goal, latest)) {
+    note.append(`Goal ${word} ${fmtNum(target, dec)} · reached`);
+    addAlert('good', `${label} is at your goal (${word} ${fmtNum(target, dec)} ${unit}).`, '#/metrics?types=' + t + '&range=90d');
+    return;
+  }
+  const gap = Math.abs(target - latest);
+  const recent = vals.slice(-30).map((v, i) => [i * DAY, v]).filter(p => p[1] != null);
+  const slope = recent.length >= 5 ? slopePerDay(recent) : null; // per day
+  const toward = slope != null && (target - latest) * slope > 0;
+  let eta = '';
+  if (toward && Math.abs(slope) > 1e-9) {
+    const days = gap / Math.abs(slope);
+    if (days < 365) eta = ' · on track for ' + fmtDayAgo(Date.now() / 1000 + days * DAY);
+  }
+  note.append(`Goal ${word} ${fmtNum(target, dec)} · ${fmtNum(gap, dec)} to go${eta}`);
+  if (slope != null && !toward && Math.abs(slope * 30) > Math.abs(latest) * 0.005)
+    addAlert('warn', `${label} is moving away from your goal: ${slope > 0 ? '+' : '−'}${fmtNum(Math.abs(slope * 30), dec)} ${unit} over 30 days (goal ${word} ${fmtNum(target, dec)}).`, '#/metrics?types=' + t + '&range=90d');
+}
+
+// dashboardAlerts: things worth a look, from the alert settings.
+function dashboardAlerts(types, addAlert) {
+  const avg = a => { const x = a.filter(v => v != null); return x.length ? x.reduce((p, q) => p + q, 0) / x.length : null; };
+  const syncH = alertSetting('sync');
+  if (syncH > 0) api('status', {}, { cache: false }).then(st => {
+    const t = st.lastSync?.finished || st.lastSync?.started;
+    if (t && Date.now() / 1000 - t > syncH * 3600) addAlert('warn', `No sync from the iPhone for ${fmtAgo(t).replace(' ago', '')}. Open the app on the phone to send the latest data.`);
+  }).catch(() => {});
+  if (types.blood_glucose && sectionOn('glucose')) {
+    api('glucose', { from: daysAgo(6), to: today(), low: +settings.glucoseLow || 70, high: +settings.glucoseHigh || 180 }).then(g => {
+      const st = g.stats;
+      if (!st.readings || st.perDay < 50) return;
+      const tir = st.ranges.inRange * 100, want = alertSetting('tir'), lows = alertSetting('lows');
+      if (lows > 0 && st.lows >= lows) addAlert('bad', `${st.lows} low${st.lows === 1 ? '' : 's'} (under ${fmtG(g.target[0])} ${gUnit()} for 15 minutes or more) in the last 7 days.`, '#/glucose?range=7');
+      if (want > 0 && tir < want) addAlert('warn', `Glucose time in range was ${fmtNum(tir, 0)}% over the last 7 days, under your ${fmtNum(want, 0)}% target.`, '#/glucose?range=7');
+      else if (want > 0) addAlert('good', `Glucose time in range ${fmtNum(tir, 0)}% over the last 7 days.`, '#/glucose?range=7');
+    }).catch(() => {});
+  }
+  const usual = (t, f) => api('series', { type: t, from: daysAgo(34), to: today(), bucket: 'day' }).then(sr => {
+    const byDay = new Map(sr.points.map(p => [isoDate(new Date(p.t * 1000)), p.v]));
+    const vals = []; for (let i = 34; i >= 0; i--) vals.push(byDay.get(daysAgo(i)) ?? null);
+    const now = avg(vals.slice(-7)), base = avg(vals.slice(0, -7));
+    if (now != null && base != null && vals.slice(-7).filter(v => v != null).length >= 3) f(now, base, sr.unit);
+  }).catch(() => {});
+  const rhr = alertSetting('rhr'), hrv = alertSetting('hrv');
+  if (rhr > 0 && types.resting_heart_rate) usual('resting_heart_rate', (now, base) => {
+    if (now - base >= rhr) addAlert('warn', `Resting heart rate is up: ${fmtNum(now, 0)} bpm this week against your usual ${fmtNum(base, 0)}. Illness, stress, alcohol or too little recovery can do that.`, '#/metrics?types=resting_heart_rate,heart_rate_variability_sdnn&range=90d');
+  });
+  if (hrv > 0 && types.heart_rate_variability_sdnn) usual('heart_rate_variability_sdnn', (now, base) => {
+    if (base > 0 && (base - now) / base * 100 >= hrv) addAlert('warn', `Heart rate variability is down: ${fmtNum(now, 0)} ms this week against your usual ${fmtNum(base, 0)} ms (−${fmtNum((base - now) / base * 100, 0)}%).`, '#/metrics?types=heart_rate_variability_sdnn,resting_heart_rate&range=90d');
+  });
+}
 
 function mondayOf(t) { const d = new Date(t * 1000); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return d; }
 
@@ -894,7 +991,13 @@ pages.metrics = async (main, _, params) => {
           bands = [{ series: [2, 3], fill: d.color + '1f' }];
         }
         if (shift) series.push({ label: cmpLabel, color: d.color + 'aa', width: 1.5, dash: [6, 4], unit, dec, values: cols[cols.length - 1] });
-        const u = chart(el, { xs: cols[0], series, bands, hooks, zoom: false, height: defs.length > 2 ? 200 : 260, sync: 'metrics' });
+        const goal = goalFor(d.t);
+        const goalHook = goal ? { draw: [u => { const y = u.valToPos(+goal.value, 'y', true); if (y < u.bbox.top || y > u.bbox.top + u.bbox.height) return;
+          const ctx = u.ctx; ctx.save(); ctx.strokeStyle = cssVar('--good'); ctx.lineWidth = 1.5 * devicePixelRatio; ctx.setLineDash([6 * devicePixelRatio, 4 * devicePixelRatio]);
+          ctx.beginPath(); ctx.moveTo(u.bbox.left, y); ctx.lineTo(u.bbox.left + u.bbox.width, y); ctx.stroke(); ctx.restore(); }] } : {};
+        const u = chart(el, { xs: cols[0], series, bands, hooks: { ...hooks, ...goalHook }, zoom: false, height: defs.length > 2 ? 200 : 260, sync: 'metrics',
+          yRange: !goal ? undefined : isBars(d) ? (u, mn, mx) => [0, Math.max(mx || 1, +goal.value) * 1.08]
+            : (u, mn, mx) => { const lo = Math.min(mn, +goal.value), hi = Math.max(mx, +goal.value), p = (hi - lo) * 0.08 || 1; return [lo - p, hi + p]; } });
         stackCharts.push(u);
         group.attach(u);
       }
@@ -1185,11 +1288,14 @@ pages.workouts = async (main, _, params) => {
     const spanDays = (Math.min(to, now) - (from || (all.length ? all[all.length - 1].start : now))) / DAY;
     const monthly = spanDays > 400;
     body.replaceChildren(totals,
-      card('Calendar', calEl, h('p', { class: 'small muted' }, 'Each square is a day, darker for more workout time.')),
+      card('Calendar', calEl, h('p', { class: 'small muted' }, 'Each square is a day, darker for more workout time. Click one to open that day.')),
       h('div', { class: 'grid cols-2' }, card(monthly ? 'Time per month' : 'Time per week', volEl),
         card('Training load', loadEl, h('p', { class: 'small muted' },
           `Fitness is the 42-day and fatigue the 7-day weighted average of daily TRIMP (heart-rate based effort, max HR ${profile.maxHr || '?'}, resting ${profile.restingHr || '?'}). Form = fitness − fatigue. Workouts without heart rate are skipped.`))),
-      card(`${ws.length} workouts`, workoutTable(ws.slice(0, 300)), ws.length > 300 ? h('p', { class: 'small muted' }, 'Showing the latest 300; narrow the range to see others.') : null));
+      card(null, h('div', { class: 'row spread' }, h('h2', {}, `${ws.length} workouts`), csvButton(() => downloadCSV('iohealth-workouts',
+        ['start', 'end', 'activity', 'minutes', 'distance_m', 'energy_kcal', 'avg_hr', 'max_hr', 'climb_m', 'source'],
+        ws.map(w => [fmtLocal(w.start), fmtLocal(w.end), activityName(w.activityType), csvNum(w.duration / 60, 1), csvNum(w.distance, 0), csvNum(w.energy, 0), csvNum(w.hrAvg, 0), csvNum(w.hrMax, 0), csvNum(w.elevation, 0), w.source])))),
+        workoutTable(ws.slice(0, 300)), ws.length > 300 ? h('p', { class: 'small muted' }, 'Showing the latest 300; narrow the range to see others.') : null));
 
     calendar(calEl, ws, state.range.startsWith('y') ? new Date(+state.range.slice(1), 11, 31) : new Date());
     const periods = monthly ? Math.ceil(spanDays / 30.4) + 1 : Math.max(4, Math.ceil(Math.min(spanDays, 3650) / 7) + 1);
@@ -1235,7 +1341,7 @@ function calendar(el, ws, endDate) {
     const label = `${weekdayFmt.format(d)}: ${m ? fmtHM(m) : 'no workouts'}`;
     svg.append(s('rect', { x: 30 + wk * (cell + gap), y: 16 + dow * (cell + gap), width: cell, height: cell, rx: 2,
       fill: m ? accent : lineC, 'fill-opacity': m ? 0.25 + 0.75 * Math.min(1, m / max) : 1,
-      onmousemove: e => showTip(e, label), onmouseleave: hideTip }));
+      onmousemove: e => showTip(e, label), onmouseleave: hideTip, onclick: () => { hideTip(); location.hash = '#/day/' + key; }, style: 'cursor:pointer' }));
   }
   ['Mon', 'Wed', 'Fri'].forEach((d, i) => svg.append(s('text', { x: 0, y: 26 + i * 2 * (cell + gap), 'font-size': 10, fill: cssVar('--muted') }, d)));
   el.replaceChildren(svg);
@@ -1560,7 +1666,9 @@ pages.sleep = async (main, _, params) => {
         stat('Avg bedtime', fmtClock(avg(n => n.start ? clock(n.start) : null))), stat('Avg wake', fmtClock(avg(n => n.end ? clock(n.end) : null))),
         stat('Bedtime spread', sd == null ? '—' : '±' + fmtNum(sd) + ' min'), stat('Avg deep', fmtHM(avg(n => n.stages.deep))), stat('Avg REM', fmtHM(avg(n => n.stages.rem))),
         stat('Nights ≥ 7 h', fmtNum(nights.filter(n => n.asleep >= 420).length / nights.length * 100) + '%'))),
-      card('Sleep stages per night', stagesChart, h('p', { class: 'small muted' }, 'Click a night for its timeline. When several apps record the same night, the one with the most sleep is used.')),
+      card(null, h('div', { class: 'row spread' }, h('h2', {}, 'Sleep stages per night'), csvButton(() => downloadCSV('iohealth-sleep',
+        ['night_ending', 'bedtime', 'wake', 'asleep_min', 'in_bed_min', ...STAGES.map(x => x[0] + '_min')],
+        nights.map(n => [n.date, n.start ? fmtLocal(n.start) : '', n.end ? fmtLocal(n.end) : '', csvNum(n.asleep, 0), csvNum(n.inBed, 0), ...STAGES.map(x => csvNum(n.stages[x[0]] || 0, 0))])))), stagesChart, h('p', { class: 'small muted' }, 'Click a night for its timeline. When several apps record the same night, the one with the most sleep is used.')),
       h('div', { class: 'grid cols-2' }, card('Bedtime and wake time', clockChart), nightCard));
     const xs = nights.map(n => new Date(n.date + 'T00:00').getTime() / 1000);
     const used = STAGES.filter(([k]) => nights.some(n => n.stages[k] > 0));
@@ -1577,7 +1685,7 @@ pages.sleep = async (main, _, params) => {
       try {
         const n = await api('sleep', { date });
         nightCard.append(hypnogram(n), h('div', { class: 'stats', style: { marginTop: '12px' } }, stat('Asleep', fmtHM(n.asleep)),
-          ...used.map(([k, label]) => stat(label, fmtHM(n.stages[k] || 0)))), h('p', { class: 'small muted' }, 'Source: ' + n.source));
+          ...used.map(([k, label]) => stat(label, fmtHM(n.stages[k] || 0)))), h('p', { class: 'small muted' }, 'Source: ' + n.source + ' · ', h('a', { href: '#/day/' + date }, 'The day after →')));
       } catch (e) { nightCard.append(h('p', { class: 'error' }, e.message)); }
     }
     showNight(nights[nights.length - 1].date);
@@ -1697,7 +1805,8 @@ pages.glucose = async (main, _, params) => {
     const agpEl = h('div', { class: 'chart' });
     const dailyEl = h('div', { class: 'chart' });
     body.replaceChildren(statsCard,
-      card('Readings', h('div', { class: 'toolbar' }, overlayChips), readingsEl,
+      card(null, h('div', { class: 'row spread' }, h('h2', {}, 'Readings'), csvButton(() => downloadCSV('iohealth-glucose-' + daysAgo(days - 1) + '-' + today(),
+        ['time', 'glucose', 'unit', 'note'], g.readings.map(r => [fmtLocal(r[0]), csvNum(gVal(r[1]), 1), gUnit(), r[2] || ''])))), h('div', { class: 'toolbar' }, overlayChips), readingsEl,
         h('p', { class: 'small muted' }, 'Green band: target range. ', state.workouts ? 'Orange: workouts. ' : '', 'Overlays get their own axis. Drag to move, scroll or Shift-drag to zoom, double-click to reset.')),
       days < 3 ? null : h('div', { class: 'grid cols-2' },
         card('Daily pattern (ambulatory glucose profile)', agpEl, h('p', { class: 'small muted' }, `Every day of the period folded onto one: median line, 25–75 % and 5–95 % bands, per 15 minutes${cgm ? '' : '. With finger-prick readings only, the bands are rough'}.`)),
@@ -2116,6 +2225,28 @@ pages.settings = async (main) => {
   const sexNames = { 1: 'female', 2: 'male', 3: 'other' };
   const lowIn = h('input', { type: 'number', min: 50, max: 120, value: settings.glucoseLow || 70, style: { width: '90px' } });
   const highIn = h('input', { type: 'number', min: 100, max: 300, value: settings.glucoseHigh || 180, style: { width: '90px' } });
+  // Goals: a metric, at least / at most, and a value in the units the app shows.
+  const goalTypes = sortedTypes.filter(t => ['quantity', 'category', 'ring'].includes(t.kind) && !typeHidden(t.type));
+  const unitOf = t => { const x = allTypes.find(a => a.type === t); return !x ? '' : x.unit === '%' ? '%' : t === 'sleep_analysis' ? 'h per night' : prettyUnit(x.unit); };
+  const goalsEl = h('div');
+  const drawGoals = () => goalsEl.replaceChildren(...(settings.goals || []).map((g, i) => h('div', { class: 'goal-row' },
+    h('select', { onchange: e => { g.type = e.target.value; saveSettings(); drawGoals(); } }, goalTypes.map(t => h('option', { value: t.type, selected: t.type === g.type }, typeLabel(t.type)))),
+    h('select', { onchange: e => { g.dir = e.target.value; saveSettings(); } }, [['min', 'at least'], ['max', 'at most']].map(([v, l]) => h('option', { value: v, selected: v === g.dir }, l))),
+    h('input', { type: 'number', step: 'any', value: g.value, placeholder: 'value', style: { width: '110px' }, onchange: e => { g.value = e.target.value; saveSettings(); } }),
+    h('span', { class: 'muted small' }, g.type === 'sleep_analysis' ? 'hours a night' : unitOf(g.type) + (goalTypes.find(t => t.type === g.type)?.cumulative || g.type.startsWith('activity_') ? ' a day' : '')),
+    h('button', { title: 'Remove this goal', onclick: () => { settings.goals.splice(i, 1); saveSettings(); drawGoals(); } }, '✕'))),
+    ...((settings.goals || []).length ? [] : [h('p', { class: 'muted small' }, 'No goals yet.')]));
+  drawGoals();
+  const addGoal = () => {
+    const used = new Set((settings.goals || []).map(g => g.type));
+    const t = ['step_count', 'body_mass', 'sleep_analysis', 'apple_exercise_time'].find(x => goalTypes.some(g => g.type === x) && !used.has(x)) || goalTypes[0]?.type;
+    if (!t) return;
+    settings.goals = [...(settings.goals || []), { type: t, dir: t === 'body_mass' ? 'max' : 'min', value: '' }];
+    saveSettings(); drawGoals();
+  };
+  const alertIn = (k, label, unit) => h('div', { class: 'goal-row' }, h('span', { style: { width: '300px' } }, label),
+    h('input', { type: 'number', min: 0, step: 'any', value: settings.alerts?.[k] ?? '', placeholder: String(ALERT_DEFAULTS[k]), style: { width: '90px' },
+      onchange: e => { settings.alerts = { ...(settings.alerts || {}), [k]: e.target.value }; saveSettings(); } }), h('span', { class: 'muted small' }, unit));
   main.replaceChildren(h('h1', {}, 'Settings'),
     card('Display',
       h('div', { class: 'toolbar' }, h('span', { style: { width: '160px' } }, 'Units'),
@@ -2134,6 +2265,13 @@ pages.settings = async (main) => {
         h('span', { class: 'muted small' }, profile.maxHr ? `Without a value: ${profile.maxHr} bpm (${profile.maxHrFrom === 'age' ? '220 − age' : 'highest recorded'})` : '')),
       h('p', { class: 'small muted' }, 'Used for heart rate zones and training load.',
         profile.restingHr ? ` Resting heart rate, 30-day average: ${profile.restingHr} bpm.` : '')),
+    card('Goals', h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Goals show on the dashboard cards (and as a dashed line in Metrics), with streaks and whether the trend is heading there. Daily totals such as steps count per day; levels such as weight use the latest reading.'),
+      goalsEl, h('button', { onclick: addGoal, style: { marginTop: '6px' } }, '+ Add a goal')),
+    card('Alerts on the dashboard', h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Leave a box empty for the default shown in grey; 0 turns that alert off.'),
+      alertIn('tir', 'Glucose time in range under (last 7 days)', '%'), alertIn('lows', 'Glucose lows in the last 7 days, at least', 'lows'),
+      alertIn('rhr', 'Resting heart rate above your usual by', 'bpm (7 days against the 4 weeks before)'), alertIn('hrv', 'Heart rate variability below your usual by', '%'),
+      alertIn('sync', 'No sync from the iPhone for', 'hours')),
+    card('On your phone', h('p', { class: 'small', style: { marginTop: 0 } }, 'Add ioHealth to the home screen and it opens full-screen like an app: in Safari on the iPhone, tap Share, then Add to Home Screen. On Android, use Chrome’s menu and Install app. Sign in once there; the session lasts 30 days.')),
     card('Profile', h('div', { class: 'stats' }, stat('Age', profile.age ?? '—'), stat('Sex', sexNames[profile.characteristics?.biologicalSex] || '—'))),
     card('Sections', h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Switch off what you don\'t use; it disappears from the menu, the dashboard and the metric lists.'),
       ...SECTIONS.map(([key, label, what]) => h('label', { class: 'row', style: { gap: '8px', margin: '6px 0' } },
