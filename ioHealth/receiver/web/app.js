@@ -70,6 +70,13 @@ function applyTheme() {
 applyTheme();
 
 const apiCache = new Map();
+let inflight = 0;
+// whenIdle resolves once no API request has been running for a moment (the page has drawn what it loads).
+async function whenIdle(quiet = 400, max = 15000) {
+  const end = Date.now() + max;
+  let calm = 0;
+  while (Date.now() < end && calm < quiet) { await new Promise(r => setTimeout(r, 50)); calm = inflight ? 0 : calm + 50; }
+}
 async function api(path, params = {}, { cache = true } = {}) {
   const q = new URLSearchParams({ ...params, tz: TZ });
   if (settings.maxHr) q.set('maxHr', settings.maxHr);
@@ -78,12 +85,13 @@ async function api(path, params = {}, { cache = true } = {}) {
     const hit = apiCache.get(url);
     if (Date.now() - hit.at < 60000) return hit.promise;
   }
+  inflight++;
   const promise = fetch(url, { credentials: 'same-origin' }).then(async r => {
     if (r.status === 401) { location.href = 'login.html'; throw new Error('not signed in'); }
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.error || r.statusText);
     return body;
-  });
+  }).finally(() => { inflight--; });
   apiCache.set(url, { at: Date.now(), promise });
   promise.catch(() => apiCache.delete(url));
   return promise;
@@ -281,7 +289,7 @@ function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt,
     useries.push({
       label: sr.label, stroke: sr.color, scale: sc, width: sr.bars ? 0 : (sr.width ?? 2), dash: sr.dash,
       fill: sr.bars ? (sr.fill || sr.color) : sr.fill, spanGaps: sr.spanGaps ?? true, show: sr.show ?? true,
-      paths: sr.bars ? uPlot.paths.bars({ size: [0.75, 48], align: 1 }) : sr.stepped ? uPlot.paths.stepped({ align: 1 }) : undefined,
+      paths: sr.bars ? uPlot.paths.bars({ size: [0.75, sr.barMax || 48], align: 1 }) : sr.stepped ? uPlot.paths.stepped({ align: 1 }) : undefined,
       points: { show: sr.points ?? false, size: 5, fill: sr.color },
       value: sr.value || ((u, v) => v == null ? '—' : fmtNum(v, sr.dec ?? 1) + (sr.unit ? ' ' + sr.unit : '')),
     });
@@ -416,11 +424,12 @@ function stackedBars(el, { xs, stacks, height = 240, unit = '', dec = 0, axisFmt
   return chart(el, { xs, series, height, axisFmt: axisFmt || fmtCompact, xFmt, sync, incrs, yRange: (u, mn, mx) => [0, (mx || 1) * 1.08] });
 }
 
-function sparkline(values, { w = 190, h: ht = 38, color = cssVar('--accent'), bars = false } = {}) {
+function sparkline(values, { w = 190, h: ht = 38, color = cssVar('--accent'), bars = false, goal = null } = {}) {
   const pts = values.map((v, i) => [i, v]).filter(p => p[1] != null && isFinite(p[1]));
   const svg = s('svg', { width: '100%', height: ht, viewBox: `0 0 ${w} ${ht}`, preserveAspectRatio: 'none' });
   if (pts.length < 2) return svg;
   const ys = pts.map(p => p[1]);
+  if (goal != null && isFinite(goal)) ys.push(goal);
   let mn = Math.min(...ys), mx = Math.max(...ys);
   if (bars) mn = 0;
   if (mx === mn) { mx += 1; mn -= 1; }
@@ -431,6 +440,7 @@ function sparkline(values, { w = 190, h: ht = 38, color = cssVar('--accent'), ba
   } else {
     svg.append(s('path', { d: pts.map((p, k) => (k ? 'L' : 'M') + X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1)).join(''), fill: 'none', stroke: color, 'stroke-width': 1.8, 'vector-effect': 'non-scaling-stroke' }));
   }
+  if (goal != null && isFinite(goal)) svg.append(s('line', { x1: 0, x2: w, y1: Y(goal), y2: Y(goal), stroke: cssVar('--good'), 'stroke-width': 1.2, 'stroke-dasharray': '4 3', 'vector-effect': 'non-scaling-stroke' }));
   return svg;
 }
 
@@ -474,6 +484,57 @@ function slopePerDay(points) {
   return d ? (n * sxy - sx * sy) / d : null;
 }
 
+// ---------- export ----------
+
+// downloadCSV saves rows (arrays) under a header as a .csv file.
+function downloadCSV(name, header, rows) {
+  const esc = v => v == null || (typeof v === 'number' && !isFinite(v)) ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+  const text = [header, ...rows].map(r => r.map(esc).join(',')).join('\r\n');
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
+  const a = h('a', { href: url, download: name.replace(/[^\w.-]+/g, '-') + '.csv' });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+function csvButton(f, title = 'Download the data shown as a CSV file') { return h('button', { class: 'noprint small-btn', title, onclick: f }, '⤓ CSV'); }
+// Local date and time as text for CSV files.
+function fmtLocal(t) { const d = new Date(t * 1000); return isoDate(d) + ' ' + d.toTimeString().slice(0, 8); }
+const csvNum = (v, dec = 3) => v == null || !isFinite(v) ? '' : +v.toFixed(dec);
+
+// printPage turns the page into a PDF through the browser's print dialog: light colours, no menus or buttons, and a
+// line saying what is shown. Charts are drawn again first so they print in light colours.
+async function printPage() {
+  const root = document.documentElement, theme = root.getAttribute('data-theme');
+  const dark = theme === 'dark' || (!theme && matchMedia('(prefers-color-scheme: dark)').matches);
+  root.classList.add('printing');
+  if (dark) { root.setAttribute('data-theme', 'light'); await render(); }
+  await whenIdle();
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  fillPrintHead();
+  const done = async () => {
+    root.classList.remove('printing');
+    if (dark) { applyTheme(); await render(); }
+  };
+  window.addEventListener('afterprint', done, { once: true });
+  window.print();
+}
+function fillPrintHead() {
+  const main = $('#app');
+  const picked = [...main.querySelectorAll('.toolbar .seg button.on, .toolbar select')].map(el => el.tagName === 'SELECT' ? el.selectedOptions[0]?.textContent : el.textContent)
+    .filter(t => t && !/^(mg\/dL|mmol\/L)$/.test(t));
+  const view = [...main.querySelectorAll('.zoombar > .muted.small:not(.hint)')].map(el => el.textContent).filter(Boolean);
+  $('#print-head').replaceChildren(h('b', {}, 'ioHealth'), ' · ', [...picked, ...view].join(' · '), h('span', { class: 'muted' }, ' · printed ' + fmtDateTime(Date.now() / 1000)));
+}
+window.addEventListener('beforeprint', fillPrintHead);
+$('#print-btn')?.addEventListener('click', printPage);
+
+// ---------- goals ----------
+
+// settings.goals: [{type, dir: 'min' (at least) | 'max' (at most), value}] in the units the app shows.
+const goalFor = t => (settings.goals || []).find(g => g.type === t && g.value !== '' && isFinite(+g.value));
+const goalMet = (g, v) => v != null && (g.dir === 'max' ? v <= +g.value : v >= +g.value);
+const ALERT_DEFAULTS = { tir: 70, lows: 1, rhr: 5, hrv: 15, sync: 24 };
+const alertSetting = k => { const v = settings.alerts?.[k]; return v === '' || v == null || !isFinite(+v) ? ALERT_DEFAULTS[k] : +v; };
+
 // Sections and metrics can be switched off in Settings; switched-off metrics are left out of every list and chart.
 const SECTIONS = [['activity', 'Activity rings', 'the Move/Exercise/Stand card on the dashboard'], ['sleep', 'Sleep', 'the Sleep page, the last-night card and sleep in Metrics'],
   ['glucose', 'Blood glucose', 'the Glucose page and the dashboard glucose card'], ['workouts', 'Workouts', 'the Workouts and Map pages and the workout cards on the dashboard'],
@@ -513,7 +574,10 @@ async function render() {
   resetPage();
   const r = route();
   const pageName = r.page === 'workout' ? 'workouts' : r.page;
-  for (const a of document.querySelectorAll('#nav a')) a.classList.toggle('active', a.dataset.page === pageName);
+  for (const a of document.querySelectorAll('#nav a')) {
+    a.classList.toggle('active', a.dataset.page === pageName);
+    if (a.dataset.page === pageName) a.parentElement.scrollLeft = Math.max(0, a.offsetLeft - 40); // phones: the menu scrolls sideways
+  }
   const main = $('#app');
   loading(main);
   window.scrollTo(0, 0);
@@ -551,7 +615,20 @@ pages.dashboard = async (main) => {
   const workoutsCard = card('Recent workouts');
   const weeklyCard = card('Training volume, last 12 weeks');
   const glucoseCard = types.blood_glucose && sectionOn('glucose') ? card('Blood glucose, last 14 days') : null;
-  main.append(h('h1', {}, 'Dashboard'), top.children.length ? top : null, glucoseCard, h('div', { style: { height: '16px' } }), kpis,
+  const alertList = h('div', { class: 'alerts' });
+  const alertsCard = card('Heads-up', alertList);
+  alertsCard.hidden = true;
+  alertsCard.style.marginBottom = '16px';
+  // level: good, warn or bad; shown most serious first.
+  const addAlert = (level, text, href) => {
+    alertsCard.hidden = false;
+    const el = h('div', { class: 'alert ' + level, 'data-rank': { bad: 0, warn: 1, good: 2 }[level] }, h('span', {}, { bad: '⚠️', warn: '⚠️', good: '✅' }[level]), h('span', {}, text),
+      href ? h('a', { href, class: 'small noprint' }, 'Look →') : null);
+    const after = [...alertList.children].find(c => +c.dataset.rank > +el.dataset.rank);
+    alertList.insertBefore(el, after || null);
+  };
+  main.append(h('div', { class: 'row spread' }, h('h1', {}, 'Dashboard'), h('a', { href: '#/day', class: 'small' }, 'Today in detail →')), alertsCard,
+    top.children.length ? top : null, glucoseCard, h('div', { style: { height: '16px' } }), kpis,
     show.workouts ? h('div', { class: 'grid cols-2' }, workoutsCard, weeklyCard) : null);
 
   // Rings: today big, the week small.
@@ -595,8 +672,10 @@ pages.dashboard = async (main) => {
     h('p', { class: 'small muted' }, `Night of ${last.date} · `, h('a', { href: '#/sleep' }, 'Sleep details')));
   }).catch(e => sleepCard.append(h('p', { class: 'error' }, e.message)));
 
-  // KPI cards
-  const shown = DASH_KPIS.filter(t => types[t]);
+  dashboardAlerts(types, addAlert);
+
+  // KPI cards: the usual ones plus any metric with a goal.
+  const shown = [...new Set([...DASH_KPIS, ...(settings.goals || []).map(g => g.type)])].filter(t => types[t]);
   if (!shown.length) kpis.append(card(null, empty('No samples yet. Sync from the iPhone app and they show up here.')));
   for (const t of shown) {
     const info = types[t];
@@ -622,13 +701,16 @@ pages.dashboard = async (main) => {
       const unit = prettyUnit(info.unit === '%' ? '%' : sr.unit);
       const headline = info.cumulative ? (byDay.get(today()) ?? 0) : last.v * k;
       const delta = recent != null && before ? (recent - before) / Math.abs(before) * 100 : null;
+      const goal = goalFor(t);
+      if (goal) goalNotes(t, goal, info, vals, last.v * k, unit, el, addAlert);
       const lowerIsBetter = ['resting_heart_rate', 'walking_heart_rate_average', 'respiratory_rate'].includes(t);
       const cls = delta == null || Math.abs(delta) < 2 ? 'flat' : (delta > 0) !== lowerIsBetter ? 'up' : 'down';
       const dec = t === 'blood_glucose' && /^mmol/i.test(sr.unit) ? 1 : typeDec(t);
       el.querySelector('.value').replaceChildren(fmtNum(headline, dec), h('small', {}, unit));
       el.append(h('div', { class: 'sub' }, info.cumulative ? 'today' : fmtDayAgo(last.t),
         ' · 7-day avg ', fmtNum(recent, typeDec(t)), delta != null ? h('span', { class: cls }, ` ${delta > 0 ? '▲' : '▼'} ${fmtNum(Math.abs(delta), 0)}%`) : null),
-      sparkline(vals, { bars: info.cumulative }));
+      sparkline(vals, { bars: info.cumulative, goal: goal ? +goal.value : null }));
+      if (goal) el.append(el.querySelector('.goal-note'));
     }).catch(e => el.append(h('div', { class: 'sub error' }, e.message)));
   }
 
@@ -641,6 +723,80 @@ pages.dashboard = async (main) => {
     weeklyChart(chartEl, ws, 12);
   }).catch(e => workoutsCard.append(h('p', { class: 'error' }, e.message)));
 };
+
+// goalNotes adds a goal line to a dashboard card and raises streaks, misses and trends as alerts. vals are the last
+// 60 days (today last) in the units shown.
+function goalNotes(t, goal, info, vals, latest, unit, el, addAlert) {
+  const label = typeLabel(t), target = +goal.value, dec = typeDec(t);
+  const word = goal.dir === 'max' ? 'at most' : 'at least';
+  const note = h('div', { class: 'sub goal-note' });
+  el.append(note);
+  const daily = info.cumulative || info.kind === 'ring' || t === 'sleep_analysis';
+  if (daily) {
+    const todayMet = goalMet(goal, vals[vals.length - 1]);
+    const past = vals.slice(0, -1);
+    const met7 = past.slice(-7).filter(v => goalMet(goal, v)).length;
+    let streak = 0;
+    for (let i = past.length - 1; i >= 0 && goalMet(goal, past[i]); i--) streak++;
+    if (todayMet) streak++;
+    note.append(`Goal ${word} ${fmtNum(target, dec)} · met ${met7} of the last 7 days`, streak >= 2 ? ` · ${streak}-day streak` : '');
+    if (streak >= 3) addAlert('good', `${label}: goal met ${streak} days in a row.`, '#/metrics?types=' + t + '&range=30d');
+    else if (past.slice(-3).length === 3 && past.slice(-3).every(v => v != null && !goalMet(goal, v)) && !todayMet)
+      addAlert('warn', `${label}: goal (${word} ${fmtNum(target, dec)}) missed the last 3 days.`, '#/metrics?types=' + t + '&range=30d');
+    return;
+  }
+  // A level to reach (weight, resting heart rate…): how far, and whether the 30-day trend heads there.
+  if (goalMet(goal, latest)) {
+    note.append(`Goal ${word} ${fmtNum(target, dec)} · reached`);
+    addAlert('good', `${label} is at your goal (${word} ${fmtNum(target, dec)} ${unit}).`, '#/metrics?types=' + t + '&range=90d');
+    return;
+  }
+  const gap = Math.abs(target - latest);
+  const recent = vals.slice(-30).map((v, i) => [i * DAY, v]).filter(p => p[1] != null);
+  const slope = recent.length >= 5 ? slopePerDay(recent) : null; // per day
+  const toward = slope != null && (target - latest) * slope > 0;
+  let eta = '';
+  if (toward && Math.abs(slope) > 1e-9) {
+    const days = gap / Math.abs(slope);
+    if (days < 365) eta = ' · on track for ' + fmtDayAgo(Date.now() / 1000 + days * DAY);
+  }
+  note.append(`Goal ${word} ${fmtNum(target, dec)} · ${fmtNum(gap, dec)} to go${eta}`);
+  if (slope != null && !toward && Math.abs(slope * 30) > Math.abs(latest) * 0.005)
+    addAlert('warn', `${label} is moving away from your goal: ${slope > 0 ? '+' : '−'}${fmtNum(Math.abs(slope * 30), dec)} ${unit} over 30 days (goal ${word} ${fmtNum(target, dec)}).`, '#/metrics?types=' + t + '&range=90d');
+}
+
+// dashboardAlerts: things worth a look, from the alert settings.
+function dashboardAlerts(types, addAlert) {
+  const avg = a => { const x = a.filter(v => v != null); return x.length ? x.reduce((p, q) => p + q, 0) / x.length : null; };
+  const syncH = alertSetting('sync');
+  if (syncH > 0) api('status', {}, { cache: false }).then(st => {
+    const t = st.lastSync?.finished || st.lastSync?.started;
+    if (t && Date.now() / 1000 - t > syncH * 3600) addAlert('warn', `No sync from the iPhone for ${fmtAgo(t).replace(' ago', '')}. Open the app on the phone to send the latest data.`);
+  }).catch(() => {});
+  if (types.blood_glucose && sectionOn('glucose')) {
+    api('glucose', { from: daysAgo(6), to: today(), low: +settings.glucoseLow || 70, high: +settings.glucoseHigh || 180 }).then(g => {
+      const st = g.stats;
+      if (!st.readings || st.perDay < 50) return;
+      const tir = st.ranges.inRange * 100, want = alertSetting('tir'), lows = alertSetting('lows');
+      if (lows > 0 && st.lows >= lows) addAlert('bad', `${st.lows} low${st.lows === 1 ? '' : 's'} (under ${fmtG(g.target[0])} ${gUnit()} for 15 minutes or more) in the last 7 days.`, '#/glucose?range=7');
+      if (want > 0 && tir < want) addAlert('warn', `Glucose time in range was ${fmtNum(tir, 0)}% over the last 7 days, under your ${fmtNum(want, 0)}% target.`, '#/glucose?range=7');
+      else if (want > 0) addAlert('good', `Glucose time in range ${fmtNum(tir, 0)}% over the last 7 days.`, '#/glucose?range=7');
+    }).catch(() => {});
+  }
+  const usual = (t, f) => api('series', { type: t, from: daysAgo(34), to: today(), bucket: 'day' }).then(sr => {
+    const byDay = new Map(sr.points.map(p => [isoDate(new Date(p.t * 1000)), p.v]));
+    const vals = []; for (let i = 34; i >= 0; i--) vals.push(byDay.get(daysAgo(i)) ?? null);
+    const now = avg(vals.slice(-7)), base = avg(vals.slice(0, -7));
+    if (now != null && base != null && vals.slice(-7).filter(v => v != null).length >= 3) f(now, base, sr.unit);
+  }).catch(() => {});
+  const rhr = alertSetting('rhr'), hrv = alertSetting('hrv');
+  if (rhr > 0 && types.resting_heart_rate) usual('resting_heart_rate', (now, base) => {
+    if (now - base >= rhr) addAlert('warn', `Resting heart rate is up: ${fmtNum(now, 0)} bpm this week against your usual ${fmtNum(base, 0)}. Illness, stress, alcohol or too little recovery can do that.`, '#/metrics?types=resting_heart_rate,heart_rate_variability_sdnn&range=90d');
+  });
+  if (hrv > 0 && types.heart_rate_variability_sdnn) usual('heart_rate_variability_sdnn', (now, base) => {
+    if (base > 0 && (base - now) / base * 100 >= hrv) addAlert('warn', `Heart rate variability is down: ${fmtNum(now, 0)} ms this week against your usual ${fmtNum(base, 0)} ms (−${fmtNum((base - now) / base * 100, 0)}%).`, '#/metrics?types=heart_rate_variability_sdnn,resting_heart_rate&range=90d');
+  });
+}
 
 function mondayOf(t) { const d = new Date(t * 1000); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return d; }
 
@@ -697,10 +853,10 @@ pages.metrics = async (main, _, params) => {
   const state = {
     types: (params.get('types') || 'resting_heart_rate,heart_rate_variability_sdnn').split(',').filter(t => types[t]),
     range: params.get('range') || '90d', bucket: params.get('bucket') || 'auto', mode: params.get('mode') || 'stack',
-    from: params.get('from') || '', to: params.get('to') || '', band: params.get('band') !== '0',
+    from: params.get('from') || '', to: params.get('to') || '', band: params.get('band') !== '0', cmp: params.get('cmp') || '',
   };
   const save = () => setParams(Object.fromEntries(Object.entries({ types: state.types.join(','), range: state.range, bucket: state.bucket,
-    mode: state.mode, from: state.range === 'custom' ? state.from : '', to: state.range === 'custom' ? state.to : '', band: state.band ? '' : '0' }).filter(([, v]) => v)));
+    mode: state.mode, from: state.range === 'custom' ? state.from : '', to: state.range === 'custom' ? state.to : '', band: state.band ? '' : '0', cmp: state.cmp }).filter(([, v]) => v)));
 
   const all = Object.values(types).filter(t => t.kind === 'quantity' || t.kind === 'category').sort((a, b) => typeLabel(a.type).localeCompare(typeLabel(b.type)));
   const chips = h('div', { class: 'row' });
@@ -722,6 +878,8 @@ pages.metrics = async (main, _, params) => {
   const bucketSel = h('select', { onchange: e => { state.bucket = e.target.value; draw(); } },
     [['auto', 'Auto'], ['raw', 'Every sample'], ['hour', 'Hourly'], ['day', 'Daily'], ['week', 'Weekly'], ['month', 'Monthly'], ['year', 'Yearly']]
       .map(([v, l]) => h('option', { value: v, selected: v === state.bucket }, l)));
+  const cmpSel = h('select', { title: 'Draw an earlier period as a dashed line, shifted onto this one', onchange: e => { state.cmp = e.target.value; draw(); } },
+    [['', 'No comparison'], ['prev', 'Compare: previous period'], ['year', 'Compare: a year earlier']].map(([v, l]) => h('option', { value: v, selected: v === state.cmp }, l)));
   const bandBox = h('label', { class: 'row small', style: { gap: '4px' } }, h('input', { type: 'checkbox', checked: state.band, onchange: e => { state.band = e.target.checked; draw(); } }), 'min/max band');
 
   const out = h('div');
@@ -733,7 +891,7 @@ pages.metrics = async (main, _, params) => {
       h('div', { class: 'toolbar', style: { marginTop: '12px', marginBottom: 0 } },
         seg([...RANGES.map(r => [r[0], r[1]]), ['custom', 'Custom']], state.range, v => { state.range = v; customRow.hidden = v !== 'custom'; if (v !== 'custom') draw(); }),
         customRow, bucketSel,
-        seg([['stack', 'Stacked'], ['overlay', 'Overlay']], state.mode, v => { state.mode = v; draw(); }), bandBox)),
+        seg([['stack', 'Stacked'], ['overlay', 'Overlay']], state.mode, v => { state.mode = v; draw(); }), bandBox, cmpSel)),
     h('div', { style: { height: '16px' } }), out, summary);
 
   // The bucket for a visible span: every sample when zoomed in close, coarser as the span grows.
@@ -757,7 +915,7 @@ pages.metrics = async (main, _, params) => {
       h('span', { class: 'dot', style: { background: PALETTE[i % PALETTE.length] } }), typeLabel(t),
       h('span', { class: 'x', title: 'Remove', onclick: () => { state.types = state.types.filter(x => x !== t); draw(); } }, '✕'))));
     for (const c of quick.children) c.classList.toggle('on', state.types.some(t => typeLabel(t) === c.textContent));
-    bandBox.hidden = state.mode !== 'stack';
+    bandBox.hidden = cmpSel.hidden = state.mode !== 'stack';
     if (!state.types.length) { out.replaceChildren(card(null, empty('Pick one or more metrics above.'))); summary.replaceChildren(); return; }
     loading(out);
     let from, to = today();
@@ -773,9 +931,18 @@ pages.metrics = async (main, _, params) => {
 
     // What is loaded: the period fetched and each metric's reply.
     let loaded = { a: home[0], b: home[1], results: null };
-    const fetchAll = (a, b) => Promise.all(state.types.map(t => api('series', { type: t, from: String(Math.floor(a)), to: String(Math.ceil(b)), bucket: bucketFor(t, b - a) })));
+    // Comparison: the same metrics for an earlier period, moved forward by `shift` onto this one.
+    const shift = state.mode !== 'stack' || state.range === 'all' ? 0 : state.cmp === 'prev' ? home[1] - home[0] : state.cmp === 'year' ? 365 * DAY : 0;
+    const cmpLabel = state.cmp === 'year' ? 'A year earlier' : 'Previous period';
+    const fetchSet = (a, b, span) => Promise.all(state.types.map(t => api('series', { type: t, from: String(Math.floor(a)), to: String(Math.ceil(b)), bucket: bucketFor(t, span) })));
+    const fetchAll = async (a, b) => {
+      const [results, cmp] = await Promise.all([fetchSet(a, b, b - a), shift ? fetchSet(a - shift, b - shift, b - a) : null]);
+      loaded.nextCmp = cmp;
+      return results;
+    };
     try {
       loaded.results = await fetchAll(home[0], home[1]);
+      loaded.cmp = loaded.nextCmp;
     } catch (e) { if (seq === drawSeq) showError(out, e); return; }
     if (seq !== drawSeq) return;
 
@@ -790,12 +957,16 @@ pages.metrics = async (main, _, params) => {
       const pts = loaded.results[d.i].points, kk = k(d);
       const cols = [pts.map(p => p.t), pts.map(p => p.v * kk)];
       if (d.band) cols.push(pts.map(p => (p.max ?? p.v) * kk), pts.map(p => (p.min ?? p.v) * kk));
-      return cols;
+      if (!shift || !loaded.cmp) return cols;
+      const cp = loaded.cmp[d.i].points;
+      return uPlot.join([cols, [cp.map(p => p.t + shift), cp.map(p => p.v * kk)]]);
     };
     const hooks = { setScale: [(u, key) => { if (key === 'x') group.scaled(u); }] };
     const subtitles = [];
     let overlayChart, stackCharts = [];
-    out.replaceChildren(card(null, zoomToolbar(group, viewLabel)));
+    const zb = zoomToolbar(group, viewLabel);
+    zb.insertBefore(csvButton(() => exportCsv()), zb.querySelector('.hint'));
+    out.replaceChildren(card(null, zb));
     if (state.mode === 'overlay') {
       const el = h('div', { class: 'chart' });
       out.append(card(`${defs.map(d => typeLabel(d.t)).join(' · ')}`, el, h('p', { class: 'small muted' }, 'Each unit has its own axis.')));
@@ -819,7 +990,14 @@ pages.metrics = async (main, _, params) => {
           series.push({ label: 'min', color: d.color + '55', width: 1, unit, dec, values: cols[3] });
           bands = [{ series: [2, 3], fill: d.color + '1f' }];
         }
-        const u = chart(el, { xs: cols[0], series, bands, hooks, zoom: false, height: defs.length > 2 ? 200 : 260, sync: 'metrics' });
+        if (shift) series.push({ label: cmpLabel, color: d.color + 'aa', width: 1.5, dash: [6, 4], unit, dec, values: cols[cols.length - 1] });
+        const goal = goalFor(d.t);
+        const goalHook = goal ? { draw: [u => { const y = u.valToPos(+goal.value, 'y', true); if (y < u.bbox.top || y > u.bbox.top + u.bbox.height) return;
+          const ctx = u.ctx; ctx.save(); ctx.strokeStyle = cssVar('--good'); ctx.lineWidth = 1.5 * devicePixelRatio; ctx.setLineDash([6 * devicePixelRatio, 4 * devicePixelRatio]);
+          ctx.beginPath(); ctx.moveTo(u.bbox.left, y); ctx.lineTo(u.bbox.left + u.bbox.width, y); ctx.stroke(); ctx.restore(); }] } : {};
+        const u = chart(el, { xs: cols[0], series, bands, hooks: { ...hooks, ...goalHook }, zoom: false, height: defs.length > 2 ? 200 : 260, sync: 'metrics',
+          yRange: !goal ? undefined : isBars(d) ? (u, mn, mx) => [0, Math.max(mx || 1, +goal.value) * 1.08]
+            : (u, mn, mx) => { const lo = Math.min(mn, +goal.value), hi = Math.max(mx, +goal.value), p = (hi - lo) * 0.08 || 1; return [lo - p, hi + p]; } });
         stackCharts.push(u);
         group.attach(u);
       }
@@ -849,7 +1027,7 @@ pages.metrics = async (main, _, params) => {
       let results;
       try { results = await fetchAll(fa, fb); } catch (e) { viewLabel.textContent = 'Could not load: ' + e.message; return; }
       if (my !== refreshSeq || seq !== drawSeq) return;
-      loaded = { a: fa, b: fb, results };
+      loaded = { a: fa, b: fb, results, cmp: loaded.nextCmp };
       const [va, vb] = group.view();
       group.syncing = true;
       if (overlayChart) {
@@ -880,13 +1058,193 @@ pages.metrics = async (main, _, params) => {
           h('td', { class: 'r num' }, fmtNum(avg, dec), ' ', prettyUnit(r.unit)), h('td', { class: 'r num' }, fmtNum(mn, dec)), h('td', { class: 'r num' }, fmtNum(mx, dec)),
           h('td', { class: 'r num' }, r.cumulative && r.bucket !== 'raw' ? fmtNum(vals.reduce((x, y) => x + y, 0), dec) : '—'),
           h('td', { class: 'r num' }, fmtNum(vals[vals.length - 1], dec)),
-          h('td', { class: 'r num' }, slope == null ? '—' : (slope > 0 ? '+' : '') + fmtNum(slope * 30, dec + 1) + ' / 30 days')));
+          h('td', { class: 'r num' }, slope == null ? '—' : (slope > 0 ? '+' : '') + fmtNum(slope * 30, dec + 1) + ' / 30 days'),
+          shift ? h('td', { class: 'r num' }, cmpCell(d, a, b, avg, dec)) : null));
       }
       const per = loaded.results[0]?.bucket === 'raw' ? 'sample' : { hour: 'hour', day: 'day', week: 'week', month: 'month', year: 'year' }[loaded.results[0]?.bucket];
       summary.replaceChildren(card('Summary of the visible period', h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {},
-        ...['Metric', `Average per ${per}`, 'Min', 'Max', 'Total', 'Latest', 'Trend'].map((x, i) => h('th', { class: i ? 'r' : '' }, x)))), tb))));
+        ...['Metric', `Average per ${per}`, 'Min', 'Max', 'Total', 'Latest', 'Trend', ...(shift ? [cmpLabel] : [])].map((x, i) => h('th', { class: i ? 'r' : '' }, x)))), tb))));
+    }
+    // The comparison period's average for what is in view, and the change to now.
+    function cmpCell(d, a, b, avg, dec) {
+      const vals = (loaded.cmp?.[d.i]?.points || []).filter(p => p.t + shift >= a && p.t + shift < b).map(p => p.v * k(d));
+      if (!vals.length) return '—';
+      const was = vals.reduce((x, y) => x + y, 0) / vals.length;
+      const ch = was ? (avg - was) / Math.abs(was) * 100 : null;
+      return h('span', {}, fmtNum(was, dec), ch == null ? '' : h('span', { class: 'muted' }, ` ${ch > 0 ? '▲' : '▼'} ${fmtNum(Math.abs(ch), 0)}%`));
+    }
+    function exportCsv() {
+      const [a, b] = group.view();
+      const rows = [];
+      for (const d of defs) {
+        const r = loaded.results[d.i], kk = k(d);
+        for (const p of r.points) if (p.t >= a && p.t < b) rows.push([fmtLocal(p.t), d.t, csvNum(p.v * kk), csvNum(p.min == null ? null : p.min * kk), csvNum(p.max == null ? null : p.max * kk), p.n ?? '', prettyUnit(r.unit), r.bucket]);
+      }
+      downloadCSV(`iohealth-${state.types.join('-')}-${isoDate(new Date(a * 1000))}-${isoDate(new Date((b - 1) * 1000))}`, ['time', 'metric', 'value', 'min', 'max', 'samples', 'unit', 'bucket'], rows);
     }
     describe(home);
+  }
+  draw();
+};
+
+// ---------- correlations ----------
+
+// Per-day values that aren't plain metrics.
+const CORR_EXTRA = { glucose_tir: ['Glucose time in range', '%', 0], glucose_cv: ['Glucose variability (CV)', '%', 1], workout_minutes: ['Workout minutes', 'min', 0] };
+const corrLabel = k => CORR_EXTRA[k]?.[0] || typeLabel(k);
+
+// dailyValues returns Map(yyyy-mm-dd → value) and the unit for one metric over [from, to].
+async function dailyValues(key, from, to) {
+  const out = new Map();
+  if (key === 'glucose_tir' || key === 'glucose_cv') {
+    const g = await api('glucose', { from, to, low: +settings.glucoseLow || 70, high: +settings.glucoseHigh || 180 });
+    for (const d of g.days) if (d.n >= 12) out.set(d.date, key === 'glucose_tir' ? d.ranges.inRange * 100 : d.mean ? d.sd / d.mean * 100 : null);
+    return { values: out, unit: '%' };
+  }
+  if (key === 'workout_minutes') {
+    const ws = await api('workouts', { from, to });
+    for (let d = new Date(from + 'T12:00'); isoDate(d) <= to; d.setDate(d.getDate() + 1)) out.set(isoDate(d), 0);
+    for (const w of ws) { const d = isoDate(new Date(w.start * 1000)); if (out.has(d)) out.set(d, out.get(d) + w.duration / 60); }
+    return { values: out, unit: 'min' };
+  }
+  const sr = await api('series', { type: key, from, to, bucket: 'day' });
+  const k = scaleFor(sr.unit);
+  for (const p of sr.points) out.set(isoDate(new Date(p.t * 1000)), p.v * k);
+  return { values: out, unit: sr.unit === '%' ? '%' : prettyUnit(sr.unit) };
+}
+
+function nextDay(d, n = 1) { const x = new Date(d + 'T12:00'); x.setDate(x.getDate() + n); return isoDate(x); }
+// pairs: [date of Y, x, y] for days where both have a value; with lag 1, X is from the day before Y.
+function corrPairs(xs, ys, lag) {
+  const out = [];
+  for (const [d, y] of ys) {
+    const x = xs.get(lag ? nextDay(d, -lag) : d);
+    if (x != null && y != null && isFinite(x) && isFinite(y)) out.push([d, x, y]);
+  }
+  return out.sort((a, b) => a[0] < b[0] ? -1 : 1);
+}
+function pearson(xs, ys) {
+  const n = xs.length;
+  if (n < 3) return null;
+  const mx = xs.reduce((a, b) => a + b, 0) / n, my = ys.reduce((a, b) => a + b, 0) / n;
+  let sxy = 0, sxx = 0, syy = 0;
+  for (let i = 0; i < n; i++) { const dx = xs[i] - mx, dy = ys[i] - my; sxy += dx * dy; sxx += dx * dx; syy += dy * dy; }
+  return sxx && syy ? { r: sxy / Math.sqrt(sxx * syy), slope: sxy / sxx, intercept: my - sxy / sxx * mx } : null;
+}
+function ranks(v) {
+  const idx = v.map((x, i) => [x, i]).sort((a, b) => a[0] - b[0]), r = new Array(v.length);
+  for (let i = 0; i < idx.length;) { let j = i; while (j + 1 < idx.length && idx[j + 1][0] === idx[i][0]) j++; for (let k = i; k <= j; k++) r[idx[k][1]] = (i + j) / 2; i = j + 1; }
+  return r;
+}
+const strength = r => r == null ? '' : Math.abs(r) < 0.1 ? 'no real link' : Math.abs(r) < 0.3 ? 'a weak link' : Math.abs(r) < 0.5 ? 'a moderate link' : 'a strong link';
+function niceTicks(lo, hi, n = 5) {
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const step0 = (hi - lo) / n, mag = 10 ** Math.floor(Math.log10(step0)), step = [1, 2, 2.5, 5, 10].map(f => f * mag).find(s => s >= step0);
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+
+function scatterPlot(pairs, fit, xLabel, yLabel, xDec, yDec) {
+  const W = 680, H = 400, L = 62, R = 16, T = 14, B = 46;
+  const xs = pairs.map(p => p[1]), ys = pairs.map(p => p[2]);
+  const pad = (a, b) => { const d = (b - a) * 0.05 || 1; return [a - d, b + d]; };
+  const [x0, x1] = pad(Math.min(...xs), Math.max(...xs)), [y0, y1] = pad(Math.min(...ys), Math.max(...ys));
+  const X = v => L + (v - x0) / (x1 - x0) * (W - L - R), Y = v => H - B - (v - y0) / (y1 - y0) * (H - T - B);
+  const muted = cssVar('--muted'), line = cssVar('--line');
+  const svg = s('svg', { class: 'scatter', viewBox: `0 0 ${W} ${H}` });
+  for (const v of niceTicks(x0, x1)) svg.append(s('line', { x1: X(v), x2: X(v), y1: T, y2: H - B, stroke: line }), s('text', { x: X(v), y: H - B + 16, 'font-size': 11, fill: muted, 'text-anchor': 'middle' }, fmtCompact(v)));
+  for (const v of niceTicks(y0, y1)) svg.append(s('line', { x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: line }), s('text', { x: L - 6, y: Y(v) + 4, 'font-size': 11, fill: muted, 'text-anchor': 'end' }, fmtCompact(v)));
+  svg.append(s('text', { x: (L + W - R) / 2, y: H - 8, 'font-size': 12, fill: muted, 'text-anchor': 'middle' }, xLabel),
+    s('text', { x: 14, y: (T + H - B) / 2, 'font-size': 12, fill: muted, 'text-anchor': 'middle', transform: `rotate(-90 14 ${(T + H - B) / 2})` }, yLabel));
+  const accent = cssVar('--accent');
+  pairs.forEach(([d, x, y], i) => svg.append(s('circle', { cx: X(x), cy: Y(y), r: 4.5, fill: accent, 'fill-opacity': 0.25 + 0.6 * (i + 1) / pairs.length, style: 'cursor:pointer',
+    onmousemove: e => showTip(e, `${fmtDate(new Date(d + 'T12:00') / 1000)} · ${fmtNum(x, xDec)} → ${fmtNum(y, yDec)}`), onmouseleave: hideTip,
+    onclick: () => { hideTip(); location.hash = '#/day/' + d; } })));
+  if (fit) {
+    const ya = fit.intercept + fit.slope * x0, yb = fit.intercept + fit.slope * x1;
+    svg.append(s('defs', {}, s('clipPath', { id: 'scatter-clip' }, s('rect', { x: L, y: T, width: W - L - R, height: H - T - B }))),
+      s('line', { x1: X(x0), y1: Y(ya), x2: X(x1), y2: Y(yb), stroke: cssVar('--text'), 'stroke-width': 2, 'stroke-dasharray': '6 4', 'clip-path': 'url(#scatter-clip)' }));
+  }
+  return svg;
+}
+
+pages.correlations = async (main, _, params) => {
+  const types = await typeList();
+  const options = [...Object.keys(CORR_EXTRA).filter(k => k.startsWith('glucose') ? types.blood_glucose && sectionOn('glucose') : sectionOn('workouts')),
+    ...Object.values(types).filter(t => t.kind === 'quantity' || t.kind === 'category' || t.kind === 'ring').map(t => t.type)]
+    .sort((a, b) => corrLabel(a).localeCompare(corrLabel(b)));
+  const pick = (want, ...fallbacks) => [want, ...fallbacks].find(k => k && options.includes(k)) || options[0];
+  const state = {
+    y: pick(params.get('y'), 'blood_glucose', 'resting_heart_rate', 'step_count'),
+    x: pick(params.get('x'), 'sleep_analysis', 'step_count', 'active_energy_burned'),
+    range: params.get('range') || '1y', lag: params.get('lag') === '1' ? 1 : 0,
+  };
+  const sel = (key) => h('select', { onchange: e => { state[key] = e.target.value; draw(); } }, options.map(k => h('option', { value: k, selected: k === state[key] }, corrLabel(k))));
+  const xSel = sel('x'), ySel = sel('y');
+  const out = h('div'), table = h('div');
+  main.replaceChildren(h('h1', {}, 'Correlations'),
+    card(null, h('div', { class: 'toolbar' }, h('span', {}, 'Does'), xSel, h('span', {}, 'go with'), ySel, h('span', {}, '?')),
+      h('div', { class: 'toolbar', style: { marginBottom: 0 } },
+        seg([['90d', '90 days'], ['1y', '1 year'], ['2y', '2 years'], ['5y', '5 years']], state.range, v => { state.range = v; draw(); }),
+        seg([['0', 'Same day'], ['1', 'Day before']], String(state.lag), v => { state.lag = +v; draw(); }),
+        h('span', { class: 'muted small' }, 'Day before: the first metric from the day before the second (e.g. sleep or a workout, then the next day’s glucose).'))),
+    h('div', { style: { height: '16px' } }, ''), out, table);
+
+  let seq = 0;
+  async function draw() {
+    const my = ++seq;
+    setParams({ x: state.x, y: state.y, range: state.range, lag: String(state.lag) });
+    xSel.value = state.x; ySel.value = state.y;
+    loading(out);
+    const days = { '90d': 90, '1y': 365, '2y': 730, '5y': 1826 }[state.range] || 365;
+    const from = daysAgo(days), to = today();
+    let X, Y;
+    try { [X, Y] = await Promise.all([dailyValues(state.x, from, to), dailyValues(state.y, from, to)]); } catch (e) { if (my === seq) showError(out, e); return; }
+    if (my !== seq) return;
+    const pairs = corrPairs(X.values, Y.values, state.lag);
+    const xDec = CORR_EXTRA[state.x]?.[2] ?? typeDec(state.x), yDec = CORR_EXTRA[state.y]?.[2] ?? typeDec(state.y);
+    const xl = `${corrLabel(state.x)}${state.lag ? ' (day before)' : ''}${X.unit ? ' · ' + X.unit : ''}`, yl = `${corrLabel(state.y)}${Y.unit ? ' · ' + Y.unit : ''}`;
+    if (pairs.length < 5) { out.replaceChildren(card(null, empty(`Only ${pairs.length} days have both. Pick a longer period or other metrics.`))); }
+    else {
+      const fit = pearson(pairs.map(p => p[1]), pairs.map(p => p[2]));
+      const rho = pearson(ranks(pairs.map(p => p[1])), ranks(pairs.map(p => p[2])));
+      const r = fit?.r;
+      const words = r == null ? 'One of them doesn’t change, so there is nothing to compare.'
+        : `${pairs.length} days show ${strength(r)}${Math.abs(r) >= 0.1 ? (r > 0 ? ': when ' + corrLabel(state.x).toLowerCase() + ' is higher, ' + corrLabel(state.y).toLowerCase() + ' tends to be higher too.' : ': when ' + corrLabel(state.x).toLowerCase() + ' is higher, ' + corrLabel(state.y).toLowerCase() + ' tends to be lower.') : '.'}`;
+      out.replaceChildren(card(null,
+        h('div', { class: 'row spread' }, h('h2', { style: { margin: 0 } }, `${corrLabel(state.x)} and ${corrLabel(state.y)}`),
+          csvButton(() => downloadCSV(`iohealth-${state.x}-vs-${state.y}`, ['date', state.x + (state.lag ? '_day_before' : ''), state.y], pairs.map(p => [p[0], csvNum(p[1]), csvNum(p[2])])))),
+        h('div', { class: 'stats', style: { margin: '12px 0' } }, stat('Correlation (r)', fmtNum(r, 2)), stat('Rank correlation', fmtNum(rho?.r, 2)),
+          stat('Explains', r == null ? '—' : fmtNum(r * r * 100, 0) + '%', 'of the variation'), stat('Days', fmtNum(pairs.length)),
+          fit ? stat(`Per 1 ${X.unit || 'unit'} more`, (fit.slope > 0 ? '+' : '') + fmtNum(fit.slope, Math.max(yDec, 2)), Y.unit) : null),
+        h('p', {}, words),
+        scatterPlot(pairs, fit, xl, yl, xDec, yDec),
+        h('p', { class: 'small muted' }, 'Each dot is a day (darker is more recent); click one to open that day. The dashed line is the best straight-line fit. A link isn’t proof that one causes the other.')));
+    }
+    drawTable(my, from, to);
+  }
+
+  // What else goes with the second metric, same day and day before.
+  async function drawTable(my, from, to) {
+    const cands = [...new Set([...COMMON_TYPES, 'sleep_analysis', 'dietary_carbohydrates', 'dietary_energy_consumed', 'number_of_alcoholic_beverages', 'dietary_caffeine',
+      'time_in_daylight', 'mindful_session', 'body_mass', ...Object.keys(CORR_EXTRA)])].filter(k => options.includes(k) && k !== state.y);
+    table.replaceChildren(card(`What goes with ${corrLabel(state.y).toLowerCase()}`, h('p', { class: 'muted small' }, 'Working it out…')));
+    const Y = await dailyValues(state.y, from, to).catch(() => null);
+    const rows = await Promise.all(cands.map(async k => {
+      const X = await dailyValues(k, from, to).catch(() => null);
+      if (!X || !Y) return null;
+      const res = [0, 1].map(lag => { const p = corrPairs(X.values, Y.values, lag); return p.length >= 14 ? { r: pearson(p.map(x => x[1]), p.map(x => x[2]))?.r, n: p.length } : null; });
+      return res.some(x => x?.r != null) ? { k, res } : null;
+    }));
+    if (my !== seq) return;
+    const list = rows.filter(Boolean).sort((a, b) => Math.max(...b.res.map(x => Math.abs(x?.r ?? 0))) - Math.max(...a.res.map(x => Math.abs(x?.r ?? 0))));
+    const cell = (x, lag, k) => h('td', { class: 'r num click', style: { cursor: 'pointer' }, onclick: () => { state.x = k; state.lag = lag; draw(); window.scrollTo(0, 0); } },
+      x?.r == null ? '—' : h('span', {}, h('span', { class: 'corr-bar', style: { width: Math.abs(x.r) * 60 + 'px', background: x.r > 0 ? '#2563eb' : '#e8445a', marginRight: '8px' } }), fmtNum(x.r, 2)));
+    table.replaceChildren(card(`What goes with ${corrLabel(state.y).toLowerCase()}`, list.length ? h('div', { class: 'scroll' }, h('table', {},
+      h('thead', {}, h('tr', {}, h('th', {}, 'Metric'), h('th', { class: 'r' }, 'Same day (r)'), h('th', { class: 'r' }, 'Day before (r)'), h('th', { class: 'r' }, 'Days'))),
+      h('tbody', {}, list.map(({ k, res }) => h('tr', {}, h('td', {}, corrLabel(k)), cell(res[0], 0, k), cell(res[1], 1, k), h('td', { class: 'r num muted' }, fmtNum(Math.max(res[0]?.n || 0, res[1]?.n || 0)))))))) : empty('Not enough overlapping days.'),
+    h('p', { class: 'small muted' }, 'Blue: both go up together. Red: one goes up as the other goes down. Click a number to plot it. Needs at least 14 days in common.')));
   }
   draw();
 };
@@ -930,11 +1288,14 @@ pages.workouts = async (main, _, params) => {
     const spanDays = (Math.min(to, now) - (from || (all.length ? all[all.length - 1].start : now))) / DAY;
     const monthly = spanDays > 400;
     body.replaceChildren(totals,
-      card('Calendar', calEl, h('p', { class: 'small muted' }, 'Each square is a day, darker for more workout time.')),
+      card('Calendar', calEl, h('p', { class: 'small muted' }, 'Each square is a day, darker for more workout time. Click one to open that day.')),
       h('div', { class: 'grid cols-2' }, card(monthly ? 'Time per month' : 'Time per week', volEl),
         card('Training load', loadEl, h('p', { class: 'small muted' },
           `Fitness is the 42-day and fatigue the 7-day weighted average of daily TRIMP (heart-rate based effort, max HR ${profile.maxHr || '?'}, resting ${profile.restingHr || '?'}). Form = fitness − fatigue. Workouts without heart rate are skipped.`))),
-      card(`${ws.length} workouts`, workoutTable(ws.slice(0, 300)), ws.length > 300 ? h('p', { class: 'small muted' }, 'Showing the latest 300; narrow the range to see others.') : null));
+      card(null, h('div', { class: 'row spread' }, h('h2', {}, `${ws.length} workouts`), csvButton(() => downloadCSV('iohealth-workouts',
+        ['start', 'end', 'activity', 'minutes', 'distance_m', 'energy_kcal', 'avg_hr', 'max_hr', 'climb_m', 'source'],
+        ws.map(w => [fmtLocal(w.start), fmtLocal(w.end), activityName(w.activityType), csvNum(w.duration / 60, 1), csvNum(w.distance, 0), csvNum(w.energy, 0), csvNum(w.hrAvg, 0), csvNum(w.hrMax, 0), csvNum(w.elevation, 0), w.source])))),
+        workoutTable(ws.slice(0, 300)), ws.length > 300 ? h('p', { class: 'small muted' }, 'Showing the latest 300; narrow the range to see others.') : null));
 
     calendar(calEl, ws, state.range.startsWith('y') ? new Date(+state.range.slice(1), 11, 31) : new Date());
     const periods = monthly ? Math.ceil(spanDays / 30.4) + 1 : Math.max(4, Math.ceil(Math.min(spanDays, 3650) / 7) + 1);
@@ -980,7 +1341,7 @@ function calendar(el, ws, endDate) {
     const label = `${weekdayFmt.format(d)}: ${m ? fmtHM(m) : 'no workouts'}`;
     svg.append(s('rect', { x: 30 + wk * (cell + gap), y: 16 + dow * (cell + gap), width: cell, height: cell, rx: 2,
       fill: m ? accent : lineC, 'fill-opacity': m ? 0.25 + 0.75 * Math.min(1, m / max) : 1,
-      onmousemove: e => showTip(e, label), onmouseleave: hideTip }));
+      onmousemove: e => showTip(e, label), onmouseleave: hideTip, onclick: () => { hideTip(); location.hash = '#/day/' + key; }, style: 'cursor:pointer' }));
   }
   ['Mon', 'Wed', 'Fri'].forEach((d, i) => svg.append(s('text', { x: 0, y: 26 + i * 2 * (cell + gap), 'font-size': 10, fill: cssVar('--muted') }, d)));
   el.replaceChildren(svg);
@@ -1124,6 +1485,11 @@ pages.workout = async (main, id) => {
     if (sr?.length > 2) addChart(label, sr.map(p => p[0]), sr.map(p => p[1] * k), { color, unit, dec: 0 });
   }
   if (charts) main.append(chartsCard);
+  const types = await typeList();
+  if (types.blood_glucose) {
+    const gl = await workoutGlucose(w).catch(() => null);
+    if (gl) { main.append(gl[0]); gl[1](); }
+  }
 
   const grid = h('div', { class: 'grid cols-2' });
   // Splits
@@ -1300,7 +1666,9 @@ pages.sleep = async (main, _, params) => {
         stat('Avg bedtime', fmtClock(avg(n => n.start ? clock(n.start) : null))), stat('Avg wake', fmtClock(avg(n => n.end ? clock(n.end) : null))),
         stat('Bedtime spread', sd == null ? '—' : '±' + fmtNum(sd) + ' min'), stat('Avg deep', fmtHM(avg(n => n.stages.deep))), stat('Avg REM', fmtHM(avg(n => n.stages.rem))),
         stat('Nights ≥ 7 h', fmtNum(nights.filter(n => n.asleep >= 420).length / nights.length * 100) + '%'))),
-      card('Sleep stages per night', stagesChart, h('p', { class: 'small muted' }, 'Click a night for its timeline. When several apps record the same night, the one with the most sleep is used.')),
+      card(null, h('div', { class: 'row spread' }, h('h2', {}, 'Sleep stages per night'), csvButton(() => downloadCSV('iohealth-sleep',
+        ['night_ending', 'bedtime', 'wake', 'asleep_min', 'in_bed_min', ...STAGES.map(x => x[0] + '_min')],
+        nights.map(n => [n.date, n.start ? fmtLocal(n.start) : '', n.end ? fmtLocal(n.end) : '', csvNum(n.asleep, 0), csvNum(n.inBed, 0), ...STAGES.map(x => csvNum(n.stages[x[0]] || 0, 0))])))), stagesChart, h('p', { class: 'small muted' }, 'Click a night for its timeline. When several apps record the same night, the one with the most sleep is used.')),
       h('div', { class: 'grid cols-2' }, card('Bedtime and wake time', clockChart), nightCard));
     const xs = nights.map(n => new Date(n.date + 'T00:00').getTime() / 1000);
     const used = STAGES.filter(([k]) => nights.some(n => n.stages[k] > 0));
@@ -1317,7 +1685,7 @@ pages.sleep = async (main, _, params) => {
       try {
         const n = await api('sleep', { date });
         nightCard.append(hypnogram(n), h('div', { class: 'stats', style: { marginTop: '12px' } }, stat('Asleep', fmtHM(n.asleep)),
-          ...used.map(([k, label]) => stat(label, fmtHM(n.stages[k] || 0)))), h('p', { class: 'small muted' }, 'Source: ' + n.source));
+          ...used.map(([k, label]) => stat(label, fmtHM(n.stages[k] || 0)))), h('p', { class: 'small muted' }, 'Source: ' + n.source + ' · ', h('a', { href: '#/day/' + date }, 'The day after →')));
       } catch (e) { nightCard.append(h('p', { class: 'error' }, e.message)); }
     }
     showNight(nights[nights.length - 1].date);
@@ -1437,7 +1805,8 @@ pages.glucose = async (main, _, params) => {
     const agpEl = h('div', { class: 'chart' });
     const dailyEl = h('div', { class: 'chart' });
     body.replaceChildren(statsCard,
-      card('Readings', h('div', { class: 'toolbar' }, overlayChips), readingsEl,
+      card(null, h('div', { class: 'row spread' }, h('h2', {}, 'Readings'), csvButton(() => downloadCSV('iohealth-glucose-' + daysAgo(days - 1) + '-' + today(),
+        ['time', 'glucose', 'unit', 'note'], g.readings.map(r => [fmtLocal(r[0]), csvNum(gVal(r[1]), 1), gUnit(), r[2] || ''])))), h('div', { class: 'toolbar' }, overlayChips), readingsEl,
         h('p', { class: 'small muted' }, 'Green band: target range. ', state.workouts ? 'Orange: workouts. ' : '', 'Overlays get their own axis. Drag to move, scroll or Shift-drag to zoom, double-click to reset.')),
       days < 3 ? null : h('div', { class: 'grid cols-2' },
         card('Daily pattern (ambulatory glucose profile)', agpEl, h('p', { class: 'small muted' }, `Every day of the period folded onto one: median line, 25–75 % and 5–95 % bands, per 15 minutes${cgm ? '' : '. With finger-prick readings only, the bands are rough'}.`)),
@@ -1507,6 +1876,14 @@ pages.glucose = async (main, _, params) => {
       valueFmt: v => fmtNum(v, 0) + '%', axisFmt: v => fmtNum(v) + '%', xFmt: (u, vals) => vals.map(v => fmtDateShort(v)) });
     }
 
+    // How glucose moves around workouts and meals.
+    if (cgm && days >= 3) {
+      const slot = h('div');
+      body.append(slot);
+      const carbs = types.dietary_carbohydrates ? await api('series', { type: 'dietary_carbohydrates', from: daysAgo(days - 1), to: today(), bucket: 'raw' }).catch(() => null) : null;
+      slot.replaceWith(responseCard(g.readings, sectionOn('workouts') ? ws.filter(w => w.start >= fromT) : [], carbs?.points || []));
+    }
+
     // Finger-prick style readings list.
     if (!cgm) {
       const recent = g.readings.slice(-60).reverse();
@@ -1519,6 +1896,140 @@ pages.glucose = async (main, _, params) => {
   draw();
 };
 function isCumulativeType(types, t) { return !!types[t]?.cumulative; }
+
+// ---------- glucose around workouts and meals ----------
+
+// glucoseAt reads glucose (mg/dL) at time t from sorted readings: interpolated between neighbours up to 20 minutes
+// apart, else the nearest reading within 7.5 minutes.
+function glucoseAt(rt, rv, t) {
+  const b = lowerBound(rt, t), a = b - 1;
+  if (a >= 0 && b < rt.length && rt[b] - rt[a] <= 1200) return rt[b] === rt[a] ? rv[a] : rv[a] + (rv[b] - rv[a]) * (t - rt[a]) / (rt[b] - rt[a]);
+  if (b < rt.length && rt[b] - t <= 450) return rv[b];
+  if (a >= 0 && t - rt[a] <= 450) return rv[a];
+  return null;
+}
+const RESPONSE_STEP = 5; // minutes
+// glucoseResponse: the glucose curve from `before` minutes before t to `after` minutes after it on a 5-minute grid,
+// with the baseline (average of the 30 minutes before). Null when the readings don't cover it well.
+function glucoseResponse(rt, rv, t, before = 60, after = 180) {
+  const mins = [], vals = [];
+  for (let m = -before; m <= after; m += RESPONSE_STEP) { mins.push(m); vals.push(glucoseAt(rt, rv, t + m * 60)); }
+  const pre = vals.filter((v, i) => mins[i] >= -30 && mins[i] <= 0 && v != null);
+  if (pre.length < 3 || vals.filter(v => v != null).length < vals.length * 0.6) return null;
+  const base = pre.reduce((a, b) => a + b, 0) / pre.length;
+  const at = m => vals[mins.indexOf(Math.round(m / RESPONSE_STEP) * RESPONSE_STEP)] ?? null;
+  const within = (a, b) => vals.filter((v, i) => mins[i] >= a && mins[i] <= b && v != null);
+  return { t, mins, vals, base, at, within };
+}
+
+// mealsFrom groups carbohydrate entries less than 30 minutes apart into meals of at least 10 g.
+function mealsFrom(points) {
+  const meals = [];
+  for (const p of points) {
+    const last = meals[meals.length - 1];
+    if (last && p.t - last.t <= 1800) last.carbs += p.v;
+    else meals.push({ t: p.t, carbs: p.v });
+  }
+  return meals.filter(m => m.carbs >= 10);
+}
+
+const fmtMin = m => m === 0 ? '0' : (m < 0 ? '−' : '+') + (Math.abs(m) >= 60 && Math.abs(m) % 60 === 0 ? Math.abs(m) / 60 + ' h' : Math.abs(m) + ' min');
+const fmtDelta = v => v == null || !isFinite(v) ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '') + fmtG(Math.abs(v));
+
+// responseCard: average glucose change around workouts (per activity) or meals (per meal size), and the list.
+function responseCard(readings, workouts, carbPoints) {
+  const rt = readings.map(r => r[0]), rv = readings.map(r => r[1]);
+  const body = h('div');
+  let mode = workouts.length ? 'workouts' : 'meals';
+  const el = card(null, h('div', { class: 'row spread', style: { marginBottom: '10px' } }, h('h2', { style: { margin: 0 } }, 'Glucose around workouts and meals'),
+    h('div', { class: 'row' }, seg([['workouts', `Workouts`], ['meals', 'Meals']], mode, v => { mode = v; draw(); }), csvButton(() => exportCsv()))), body);
+  let rows = [];
+  function draw() {
+    const isW = mode === 'workouts';
+    const events = isW ? workouts.map(w => ({ t: w.start, w, dur: Math.round((w.end - w.start) / 60) }))
+      : mealsFrom(carbPoints).map(m => ({ t: m.t, carbs: m.carbs }));
+    const after = isW ? 180 : 180;
+    rows = [];
+    for (const e of events) {
+      const r = glucoseResponse(rt, rv, e.t, 60, after);
+      if (!r) continue;
+      if (isW) {
+        const endM = Math.min(e.dur, after), during = r.within(0, endM + 60);
+        rows.push({ e, r, group: e.w.activityType, groupLabel: activityName(e.w.activityType), color: activityColor(e.w.activityType),
+          a: r.at(endM) == null ? null : r.at(endM) - r.base, b: during.length ? Math.min(...during) : null, c: r.at(endM + 60) == null ? null : r.at(endM + 60) - r.base });
+      } else {
+        const post = r.mins.map((m, i) => [m, r.vals[i]]).filter(([m, v]) => m >= 0 && v != null);
+        if (!post.length) continue;
+        const [pm, pv] = post.reduce((x, y) => y[1] > x[1] ? y : x);
+        const back = post.find(([m, v]) => m > pm && v <= r.base + 10);
+        const size = e.carbs < 30 ? ['small', 'Under 30 g', '#16a34a'] : e.carbs < 60 ? ['medium', '30–60 g', '#f59e0b'] : ['large', '60 g or more', '#e8445a'];
+        rows.push({ e, r, group: size[0], groupLabel: size[1], color: size[2], a: pv - r.base, b: pm, c: back ? back[0] : null });
+      }
+    }
+    if (!rows.length) {
+      body.replaceChildren(empty(isW ? 'No workouts in this period with glucose readings around them. Pick a longer period.' :
+        carbPoints.length ? 'No meals with readings around them in this period. Pick a longer period.' : 'No carbohydrates logged. Log meals (carbs) in an app that writes to Health and they show up here.'));
+      return;
+    }
+    // Average change from the baseline per group.
+    const groups = new Map();
+    for (const x of rows) (groups.get(x.group) || groups.set(x.group, { label: x.groupLabel, color: x.color, rows: [] }).get(x.group)).rows.push(x);
+    const top = [...groups.values()].sort((a, b) => b.rows.length - a.rows.length).slice(0, 6);
+    const mins = rows[0].r.mins;
+    const series = top.map(g => ({
+      label: `${g.label} (${g.rows.length})`, color: g.color, unit: gUnit(), dec: mmol() ? 1 : 0, width: 2.5,
+      values: mins.map((m, i) => { const ds = g.rows.filter(x => x.r.vals[i] != null).map(x => x.r.vals[i] - x.r.base); return ds.length ? gVal(ds.reduce((a, b) => a + b, 0) / ds.length) : null; }),
+      value: (u, v) => v == null ? '—' : (v > 0 ? '+' : '') + fmtNum(v, mmol() ? 1 : 0) + ' ' + gUnit(),
+    }));
+    const chartEl = h('div', { class: 'chart' });
+    const tb = h('tbody');
+    for (const x of rows.slice().sort((a, b) => b.e.t - a.e.t).slice(0, 60)) {
+      tb.append(h('tr', { class: 'click', onclick: () => location.hash = isW ? '#/workout/' + x.e.w.uuid : '#/day/' + isoDate(new Date(x.e.t * 1000)) },
+        h('td', {}, fmtDateTime(x.e.t)),
+        h('td', {}, isW ? h('span', { style: { color: x.color, fontWeight: 600 } }, activityName(x.e.w.activityType), h('span', { class: 'muted' }, ' · ' + fmtHM(x.e.dur))) : fmtNum(x.e.carbs, 0) + ' g'),
+        h('td', { class: 'r num' }, fmtG(x.r.base)),
+        h('td', { class: 'r num' }, fmtDelta(x.a)),
+        h('td', { class: 'r num' }, isW ? fmtG(x.b) : fmtMin(x.b)),
+        h('td', { class: 'r num' }, isW ? fmtDelta(x.c) : x.c == null ? 'not within 3 h' : fmtMin(x.c))));
+    }
+    const heads = isW ? ['When', 'Workout', 'Before', 'Change by the end', 'Lowest (to 1 h after)', '1 h after the end'] : ['When', 'Carbs', 'Before', 'Rise to peak', 'Peak after', 'Back near start'];
+    body.replaceChildren(chartEl,
+      h('p', { class: 'small muted' }, isW ? 'Average change from the level in the 30 minutes before the start, per activity. 0 is the start of the workout.'
+        : 'Average change from the level in the 30 minutes before eating, per meal size. Carb entries less than 30 minutes apart count as one meal.'),
+      h('div', { class: 'scroll', style: { maxHeight: '360px' } }, h('table', {}, h('thead', {}, h('tr', {}, ...heads.map((x, i) => h('th', { class: i > 1 ? 'r' : '' }, x)))), tb)),
+      ...(rows.length > 60 ? [h('p', { class: 'small muted' }, `Latest 60 of ${rows.length}; the chart uses all of them.`)] : []));
+    chart(chartEl, { xs: mins.map(m => m * 60), xTime: false, height: 260, xIncrs: [1800, 3600], xFmt: (u, vals) => vals.map(v => fmtMin(v / 60)), series,
+      axisFmt: v => (v > 0 ? '+' : '') + fmtNum(v, mmol() ? 1 : 0),
+      hooks: { drawClear: [u => { const ctx = u.ctx, x = u.valToPos(0, 'x', true), y = u.valToPos(0, 'y', true); ctx.save(); ctx.strokeStyle = cssVar('--muted'); ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(x, u.bbox.top); ctx.lineTo(x, u.bbox.top + u.bbox.height); ctx.moveTo(u.bbox.left, y); ctx.lineTo(u.bbox.left + u.bbox.width, y); ctx.stroke(); ctx.restore(); }] } });
+  }
+  function exportCsv() {
+    const isW = mode === 'workouts';
+    downloadCSV('iohealth-glucose-' + mode, isW ? ['start', 'workout', 'minutes', 'before', 'change_by_end', 'lowest', 'change_1h_after', 'unit'] : ['time', 'carbs_g', 'before', 'rise_to_peak', 'peak_min', 'back_near_start_min', 'unit'],
+      rows.map(x => isW ? [fmtLocal(x.e.t), activityName(x.e.w.activityType), x.e.dur, csvNum(gVal(x.r.base), 1), csvNum(gVal(x.a), 1), csvNum(gVal(x.b), 1), csvNum(gVal(x.c), 1), gUnit()]
+        : [fmtLocal(x.e.t), csvNum(x.e.carbs, 0), csvNum(gVal(x.r.base), 1), csvNum(gVal(x.a), 1), x.b, x.c ?? '', gUnit()]));
+  }
+  draw();
+  return el;
+}
+
+// The glucose curve around one workout, for the workout page.
+async function workoutGlucose(w) {
+  const target = [+settings.glucoseLow || 70, +settings.glucoseHigh || 180];
+  const g = await api('glucose', { from: String(Math.floor(w.start - 3600)), to: String(Math.ceil(w.end + 7200)), low: target[0], high: target[1] });
+  if (g.readings.length < 6) return null;
+  if (!settings.glucoseUnit) settings.glucoseUnit = g.recordedUnit;
+  const rt = g.readings.map(r => r[0]), rv = g.readings.map(r => r[1]);
+  const r = glucoseResponse(rt, rv, w.start, 60, Math.round((w.end - w.start) / 60) + 120);
+  const endM = Math.round((w.end - w.start) / 60);
+  const el = h('div', { class: 'chart' });
+  const c = card('Blood glucose around this workout', r ? h('div', { class: 'stats', style: { marginBottom: '10px' } },
+    stat('Before', fmtG(r.base), gUnit()), stat('Change by the end', fmtDelta(r.at(endM) == null ? null : r.at(endM) - r.base), gUnit()),
+    stat('Lowest', fmtG(Math.min(...r.within(0, endM + 60))), gUnit()), stat('1 h after the end', fmtDelta(r.at(endM + 60) == null ? null : r.at(endM + 60) - r.base), gUnit())) : null,
+  el, h('p', { class: 'small muted' }, 'From an hour before to two hours after. Orange: the workout. Green band: target range.'));
+  return [c, () => chart(el, { xs: rt, height: 240, hooks: { drawClear: [glucoseBackdrop(g.target, [w])] },
+    series: [{ label: 'Glucose', color: '#e8445a', scale: 'g', unit: gUnit(), dec: mmol() ? 1 : 0, values: rv.map(gVal), spanGaps: false, points: rt.length < 60, axisFmt: v => fmtNum(v, mmol() ? 1 : 0) }] })];
+}
 
 // ---------- records ----------
 
@@ -1562,6 +2073,135 @@ pages.records = async (main) => {
   if (!grid.children.length) grid.append(card(null, empty('No records yet.')));
 };
 
+// ---------- one day ----------
+
+// Shades spans of time behind a chart: workouts orange, sleep violet.
+function spansBackdrop(spans) {
+  return u => {
+    const ctx = u.ctx, { left, top, width, height } = u.bbox;
+    ctx.save();
+    for (const sp of spans) {
+      const x1 = u.valToPos(sp.start, 'x', true), x2 = u.valToPos(sp.end, 'x', true);
+      if (x2 < left || x1 > left + width) continue;
+      ctx.fillStyle = sp.color;
+      ctx.fillRect(Math.max(left, x1), top, Math.min(left + width, x2) - Math.max(left, x1), height);
+    }
+    ctx.restore();
+  };
+}
+
+const DAY_TOTALS = [['step_count', 'Steps'], ['active_energy_burned', 'Active energy'], ['apple_exercise_time', 'Exercise'], ['distance_walking_running', 'Distance'],
+  ['flights_climbed', 'Flights'], ['resting_heart_rate', 'Resting HR'], ['heart_rate_variability_sdnn', 'HRV'], ['body_mass', 'Weight'], ['dietary_carbohydrates', 'Carbs'],
+  ['dietary_energy_consumed', 'Food energy'], ['time_in_daylight', 'Daylight']];
+
+pages.day = async (main, arg) => {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(arg) ? arg : today();
+  const types = await typeList();
+  const t0 = new Date(date + 'T00:00').getTime() / 1000, t1 = new Date(date + 'T00:00');
+  t1.setDate(t1.getDate() + 1);
+  const end = t1.getTime() / 1000;
+  const shift = n => { const d = new Date(date + 'T12:00'); d.setDate(d.getDate() + n); return isoDate(d); };
+  const go = d => location.hash = '#/day/' + d;
+  const picker = h('input', { type: 'date', value: date, max: today(), onchange: e => e.target.value && go(e.target.value) });
+  const title = new Date(date + 'T12:00').toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const statsEl = h('div', { class: 'stats' });
+  const timeline = h('div');
+  const side = h('div', { class: 'grid cols-2' });
+  const csvRows = [];
+  main.replaceChildren(
+    h('div', { class: 'row spread' }, h('h1', {}, title),
+      h('div', { class: 'daynav toolbar', style: { margin: 0 } }, h('button', { onclick: () => go(shift(-1)) }, '◀ Previous'), picker,
+        h('button', { onclick: () => go(shift(1)), disabled: date >= today() }, 'Next ▶'), date !== today() ? h('button', { onclick: () => go(today()) }, 'Today') : null,
+        csvButton(() => downloadCSV('iohealth-' + date, ['time', 'metric', 'value', 'unit'], csvRows)))),
+    card(null, statsEl), h('div', { style: { height: '16px' } }), timeline, side);
+
+  const show = { glucose: types.blood_glucose && sectionOn('glucose'), sleep: types.sleep_analysis && sectionOn('sleep'), workouts: sectionOn('workouts'), activity: sectionOn('activity') };
+  const target = [+settings.glucoseLow || 70, +settings.glucoseHigh || 180];
+  const totalsWanted = DAY_TOTALS.filter(([t]) => types[t]);
+  const [totals, ring, night, ws, gl, hr, steps, energy, carbs] = await Promise.all([
+    Promise.all(totalsWanted.map(([t]) => api('series', { type: t, from: date, to: date, bucket: 'day' }).catch(() => null))),
+    show.activity ? api('activity', { from: date, to: date }).then(a => a[0]).catch(() => null) : null,
+    show.sleep ? api('sleep', { date }).catch(() => null) : null,
+    show.workouts ? api('workouts', { from: date, to: date }).catch(() => []) : [],
+    show.glucose ? api('glucose', { from: date, to: date, low: target[0], high: target[1] }).catch(() => null) : null,
+    types.heart_rate ? api('series', { type: 'heart_rate', from: date, to: date, bucket: 'raw' }).catch(() => null) : null,
+    types.step_count ? api('series', { type: 'step_count', from: date, to: date, bucket: 'hour' }).catch(() => null) : null,
+    types.active_energy_burned ? api('series', { type: 'active_energy_burned', from: date, to: date, bucket: 'hour' }).catch(() => null) : null,
+    types.dietary_carbohydrates ? api('series', { type: 'dietary_carbohydrates', from: date, to: date, bucket: 'raw' }).catch(() => null) : null,
+  ]);
+  if (gl && !settings.glucoseUnit) settings.glucoseUnit = gl.recordedUnit;
+
+  // Numbers for the day.
+  const stats = [];
+  totalsWanted.forEach(([t, label], i) => {
+    const p = totals[i]?.points?.[0];
+    if (!p) return;
+    const unit = totals[i].unit, v = p.v * scaleFor(unit);
+    if (t === 'apple_exercise_time') stats.push(stat(label, fmtHM(v)));
+    else if (t === 'distance_walking_running') stats.push(stat(label, ...distParts(unit === 'km' ? v * 1000 : unit === 'mi' ? v * 1609.344 : v)));
+    else stats.push(stat(label, fmtNum(v, typeDec(t, unit)), prettyUnit(unit)));
+    csvRows.push([date, t, csvNum(v), prettyUnit(unit)]);
+  });
+  if (night) stats.push(stat('Slept', fmtHM(night.asleep)));
+  if (gl?.stats?.readings) stats.push(stat('Avg glucose', fmtG(gl.stats.mean), gUnit()), stat('Time in range', pct(gl.stats.ranges.inRange)));
+  if (ws.length) stats.push(stat(ws.length === 1 ? 'Workout' : `${ws.length} workouts`, fmtHM(ws.reduce((a, w) => a + w.duration, 0) / 60)));
+  if (ring) stats.unshift(h('div', { class: 'stat' }, rings(ring, 64)));
+  statsEl.replaceChildren(...(stats.length ? stats : [empty('Nothing recorded on this day.')]));
+
+  // Timeline: everything on one clock, sleep and workouts shaded.
+  const spans = [...ws.map(w => ({ start: w.start, end: w.end, color: 'rgba(249,115,22,0.15)' }))];
+  if (night?.segments) for (const sg of night.segments) if (sg.stage !== 'inBed' && sg.stage !== 'awake') spans.push({ start: sg.s, end: sg.e, color: 'rgba(139,92,246,0.10)' });
+  const backdrop = spansBackdrop(spans);
+  const charts = [], later = [];
+  const add = (titleText, el) => { charts.push(h('h3', { style: { marginTop: charts.length ? '14px' : 0 } }, titleText), el); };
+  const xr = [t0, end];
+  const hourFmt = (u, vals) => vals.map(v => fmtTime(v));
+  if (gl?.readings?.length) {
+    const el = h('div', { class: 'chart' });
+    add('Blood glucose', el);
+    const carbPts = (carbs?.points || []);
+    const tables = [[gl.readings.map(r => r[0]), gl.readings.map(r => gVal(r[1]))]];
+    if (carbPts.length) tables.push([carbPts.map(p => p.t), carbPts.map(p => p.v)]);
+    const d = tables.length > 1 ? uPlot.join(tables) : tables[0];
+    later.push(() => chart(el, { xs: d[0], height: 240, xRange: xr, xFmt: hourFmt, sync: 'day', hooks: { drawClear: [glucoseBackdrop(gl.target), backdrop] }, series: [
+      { label: 'Glucose', color: '#e8445a', scale: 'g', unit: gUnit(), dec: mmol() ? 1 : 0, values: d[1], spanGaps: false, points: gl.readings.length < 60, axisFmt: v => fmtNum(v, mmol() ? 1 : 0) },
+      ...(carbPts.length ? [{ label: 'Carbs', color: '#f59e0b', fill: '#f59e0b99', scale: 'carbs', unit: 'g', dec: 0, values: d[2], bars: true, barMax: 8 }] : []),
+    ] }));
+    for (const r of gl.readings) csvRows.push([fmtLocal(r[0]), 'blood_glucose', csvNum(gVal(r[1]), 1), gUnit()]);
+    for (const p of carbPts) csvRows.push([fmtLocal(p.t), 'dietary_carbohydrates', csvNum(p.v, 1), 'g']);
+  }
+  if (hr?.points?.length) {
+    const el = h('div', { class: 'chart' });
+    add('Heart rate', el);
+    later.push(() => chart(el, { xs: hr.points.map(p => p.t), height: 180, xRange: xr, xFmt: hourFmt, sync: 'day', hooks: { drawClear: [backdrop] },
+      series: [{ label: 'Heart rate', color: '#e8445a', unit: 'bpm', dec: 0, values: hr.points.map(p => p.v), width: 1.5 }] }));
+    for (const p of hr.points) csvRows.push([fmtLocal(p.t), 'heart_rate', csvNum(p.v, 0), 'bpm']);
+  }
+  if (steps?.points?.length || energy?.points?.length) {
+    const el = h('div', { class: 'chart' });
+    add('Steps and active energy per hour', el);
+    const tables = [steps, energy].filter(x => x?.points?.length).map(x => [x.points.map(p => p.t + 1800), x.points.map(p => p.v)]);
+    const d = tables.length > 1 ? uPlot.join(tables) : tables[0];
+    const series = [];
+    if (steps?.points?.length) series.push({ label: 'Steps', color: '#2563eb', unit: '', dec: 0, values: d[1], bars: true, fill: '#2563ebaa' });
+    if (energy?.points?.length) series.push({ label: 'Active energy', color: '#f97316', unit: 'kcal', dec: 0, values: d[series.length + 1], scale: 'kcal', width: 2 });
+    later.push(() => chart(el, { xs: d[0], height: 180, xRange: xr, xFmt: hourFmt, sync: 'day', hooks: { drawClear: [backdrop] }, series }));
+    for (const x of [steps, energy]) for (const p of x?.points || []) csvRows.push([fmtLocal(p.t), x.type, csvNum(p.v, 1), prettyUnit(x.unit)]);
+  }
+  timeline.replaceChildren(charts.length ? card('Timeline', ...charts, h('p', { class: 'small muted' },
+    'Violet: asleep. Orange: workouts. Charts move together: drag to move, scroll or pinch to zoom, double-click to reset.')) : card(null, empty('No timeline data for this day.')));
+  for (const f of later) f();
+
+  // Sleep and workouts.
+  if (night) side.append(card('Sleep that ended this morning', hypnogram(night), h('div', { class: 'stats', style: { marginTop: '12px' } },
+    stat('Asleep', fmtHM(night.asleep)), stat('Bedtime', night.start ? fmtTime(night.start) : '—'), stat('Woke up', night.end ? fmtTime(night.end) : '—'),
+    stat('Deep', fmtHM(night.stages.deep)), stat('REM', fmtHM(night.stages.rem)))));
+  if (ws.length) side.append(card('Workouts', workoutTable(ws, { compact: true })));
+  if (gl?.stats?.readings > 20) side.append(card('Blood glucose', h('div', { class: 'stats' }, stat('Average', fmtG(gl.stats.mean), gUnit()),
+    stat('Lowest / highest', `${fmtG(gl.stats.min)} / ${fmtG(gl.stats.max)}`), stat('Variability (CV)', fmtNum(gl.stats.cv, 1), '%'), stat('Lows ≥ 15 min', fmtNum(gl.stats.lows))),
+    h('div', { style: { marginTop: '12px' } }, rangeBar(gl.stats.ranges)), rangeLegend(gl.stats.ranges, gl.target)));
+};
+
 // ---------- settings ----------
 
 pages.settings = async (main) => {
@@ -1585,6 +2225,28 @@ pages.settings = async (main) => {
   const sexNames = { 1: 'female', 2: 'male', 3: 'other' };
   const lowIn = h('input', { type: 'number', min: 50, max: 120, value: settings.glucoseLow || 70, style: { width: '90px' } });
   const highIn = h('input', { type: 'number', min: 100, max: 300, value: settings.glucoseHigh || 180, style: { width: '90px' } });
+  // Goals: a metric, at least / at most, and a value in the units the app shows.
+  const goalTypes = sortedTypes.filter(t => ['quantity', 'category', 'ring'].includes(t.kind) && !typeHidden(t.type));
+  const unitOf = t => { const x = allTypes.find(a => a.type === t); return !x ? '' : x.unit === '%' ? '%' : t === 'sleep_analysis' ? 'h per night' : prettyUnit(x.unit); };
+  const goalsEl = h('div');
+  const drawGoals = () => goalsEl.replaceChildren(...(settings.goals || []).map((g, i) => h('div', { class: 'goal-row' },
+    h('select', { onchange: e => { g.type = e.target.value; saveSettings(); drawGoals(); } }, goalTypes.map(t => h('option', { value: t.type, selected: t.type === g.type }, typeLabel(t.type)))),
+    h('select', { onchange: e => { g.dir = e.target.value; saveSettings(); } }, [['min', 'at least'], ['max', 'at most']].map(([v, l]) => h('option', { value: v, selected: v === g.dir }, l))),
+    h('input', { type: 'number', step: 'any', value: g.value, placeholder: 'value', style: { width: '110px' }, onchange: e => { g.value = e.target.value; saveSettings(); } }),
+    h('span', { class: 'muted small' }, g.type === 'sleep_analysis' ? 'hours a night' : unitOf(g.type) + (goalTypes.find(t => t.type === g.type)?.cumulative || g.type.startsWith('activity_') ? ' a day' : '')),
+    h('button', { title: 'Remove this goal', onclick: () => { settings.goals.splice(i, 1); saveSettings(); drawGoals(); } }, '✕'))),
+    ...((settings.goals || []).length ? [] : [h('p', { class: 'muted small' }, 'No goals yet.')]));
+  drawGoals();
+  const addGoal = () => {
+    const used = new Set((settings.goals || []).map(g => g.type));
+    const t = ['step_count', 'body_mass', 'sleep_analysis', 'apple_exercise_time'].find(x => goalTypes.some(g => g.type === x) && !used.has(x)) || goalTypes[0]?.type;
+    if (!t) return;
+    settings.goals = [...(settings.goals || []), { type: t, dir: t === 'body_mass' ? 'max' : 'min', value: '' }];
+    saveSettings(); drawGoals();
+  };
+  const alertIn = (k, label, unit) => h('div', { class: 'goal-row' }, h('span', { style: { width: '300px' } }, label),
+    h('input', { type: 'number', min: 0, step: 'any', value: settings.alerts?.[k] ?? '', placeholder: String(ALERT_DEFAULTS[k]), style: { width: '90px' },
+      onchange: e => { settings.alerts = { ...(settings.alerts || {}), [k]: e.target.value }; saveSettings(); } }), h('span', { class: 'muted small' }, unit));
   main.replaceChildren(h('h1', {}, 'Settings'),
     card('Display',
       h('div', { class: 'toolbar' }, h('span', { style: { width: '160px' } }, 'Units'),
@@ -1603,6 +2265,13 @@ pages.settings = async (main) => {
         h('span', { class: 'muted small' }, profile.maxHr ? `Without a value: ${profile.maxHr} bpm (${profile.maxHrFrom === 'age' ? '220 − age' : 'highest recorded'})` : '')),
       h('p', { class: 'small muted' }, 'Used for heart rate zones and training load.',
         profile.restingHr ? ` Resting heart rate, 30-day average: ${profile.restingHr} bpm.` : '')),
+    card('Goals', h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Goals show on the dashboard cards (and as a dashed line in Metrics), with streaks and whether the trend is heading there. Daily totals such as steps count per day; levels such as weight use the latest reading.'),
+      goalsEl, h('button', { onclick: addGoal, style: { marginTop: '6px' } }, '+ Add a goal')),
+    card('Alerts on the dashboard', h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Leave a box empty for the default shown in grey; 0 turns that alert off.'),
+      alertIn('tir', 'Glucose time in range under (last 7 days)', '%'), alertIn('lows', 'Glucose lows in the last 7 days, at least', 'lows'),
+      alertIn('rhr', 'Resting heart rate above your usual by', 'bpm (7 days against the 4 weeks before)'), alertIn('hrv', 'Heart rate variability below your usual by', '%'),
+      alertIn('sync', 'No sync from the iPhone for', 'hours')),
+    card('On your phone', h('p', { class: 'small', style: { marginTop: 0 } }, 'Add ioHealth to the home screen and it opens full-screen like an app: in Safari on the iPhone, tap Share, then Add to Home Screen. On Android, use Chrome’s menu and Install app. Sign in once there; the session lasts 30 days.')),
     card('Profile', h('div', { class: 'stats' }, stat('Age', profile.age ?? '—'), stat('Sex', sexNames[profile.characteristics?.biologicalSex] || '—'))),
     card('Sections', h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Switch off what you don\'t use; it disappears from the menu, the dashboard and the metric lists.'),
       ...SECTIONS.map(([key, label, what]) => h('label', { class: 'row', style: { gap: '8px', margin: '6px 0' } },

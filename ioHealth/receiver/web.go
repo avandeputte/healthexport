@@ -162,13 +162,19 @@ func registerWeb(mux *http.ServeMux, w *WebAPI, auth *webAuth) {
 			return
 		}
 		p := r.URL.Path
-		public := p == "/login.html" || strings.HasPrefix(p, "/vendor/") || p == "/app.css" || p == "/favicon.svg"
+		// The login page and what it needs, plus the home-screen manifest and icons, which phones fetch without the
+		// session cookie.
+		public := p == "/login.html" || strings.HasPrefix(p, "/vendor/") || p == "/app.css" || p == "/favicon.svg" ||
+			p == "/manifest.webmanifest" || p == "/apple-touch-icon.png" || strings.HasPrefix(p, "/icon-")
 		if !public && !auth.valid(r) {
 			http.Redirect(rw, r, "login.html", http.StatusSeeOther)
 			return
 		}
 		if p == "/" || p == "/index.html" || p == "/login.html" {
 			rw.Header().Set("Cache-Control", "no-cache")
+		}
+		if p == "/manifest.webmanifest" {
+			rw.Header().Set("Content-Type", "application/manifest+json")
 		}
 		rw.Header().Set("X-Content-Type-Options", "nosniff")
 		rw.Header().Set("Referrer-Policy", "same-origin")
