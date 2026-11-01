@@ -247,7 +247,10 @@ function observeWidth(el, f) {
 
 /* chart draws a uPlot time series.
    series: [{label, color, unit, dec, bars, scale, values, fill, dash, points, value(fmt)}]; data = [xs, ...values]. */
-function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt, xIncrs, bands, legend = true, yRange, hooks, axisFmt, incrs }) {
+/* Unless zoom is false (the caller attaches its own zoomGroup), every chart gets drag to pan, wheel/pinch to zoom and
+   Shift-drag to zoom, kept within its data; charts sharing a sync key move together. */
+const autoGroups = new Map();
+function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt, xIncrs, bands, legend = true, yRange, hooks, axisFmt, incrs, zoom = true }) {
   const muted = cssVar('--muted'), line = cssVar('--line');
   const scales = { x: { time: xTime } };
   const axes = [{ stroke: muted, grid: { stroke: line, width: 1 }, ticks: { stroke: line }, values: xFmt, incrs: xIncrs }];
@@ -276,10 +279,20 @@ function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt,
   const opts = {
     width: el.clientWidth || 600, height, scales, axes, series: useries, bands,
     legend: { show: legend, live: true }, cursor: { sync: sync ? { key: sync, setSeries: false } : undefined, drag: { x: true, y: false }, bind: { dblclick: () => () => null } },
-    hooks,
+    hooks: zoom ? { ...hooks, setScale: [...(hooks?.setScale || []), (u, key) => { if (key === 'x' && u.zoomGroup) u.zoomGroup.scaled(u); }] } : hooks,
   };
   const u = new uPlot(opts, [xs, ...series.map(sr => sr.values)], el);
   if (xRange) u.setScale('x', { min: xRange[0], max: xRange[1] });
+  if (zoom && xs.length > 1 && u.scales.x.min != null) {
+    let g = sync && autoGroups.get(sync);
+    if (!g) {
+      const home = [u.scales.x.min, u.scales.x.max];
+      g = zoomGroup({ home, minT: home[0], maxT: home[1], minSpan: Math.max(Math.min(900, (home[1] - home[0]) / 50), 3 * (home[1] - home[0]) / xs.length) });
+      if (sync) { autoGroups.set(sync, g); onCleanup(() => autoGroups.delete(sync)); }
+    }
+    u.zoomGroup = g;
+    g.attach(u);
+  }
   observeWidth(el, w => u.setSize({ width: w, height }));
   onCleanup(() => u.destroy());
   return u;
@@ -288,13 +301,15 @@ function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt,
 /* zoomGroup keeps the x axes of several charts together and adds zoom and pan: drag to pan, Shift-drag across a chart to zoom into
    that period, the mouse wheel, Ctrl/⌘ + scroll or a trackpad pinch to zoom, Shift + scroll or a sideways swipe to pan, two-finger pinch and
    one-finger drag on touch screens, double-click to go back. onView([from, to]) runs once the view settles. */
-function zoomGroup({ home, onView, maxT }) {
+function zoomGroup({ home, onView, minT, maxT, minSpan = 900 }) {
   const g = { charts: [], home, syncing: false, timer: null };
   g.view = () => { const u = g.charts[0]; return u && u.scales.x.min != null ? [u.scales.x.min, u.scales.x.max] : g.home; };
   g.set = (a, b) => {
-    const minSpan = 900, limit = maxT || Date.now() / 1000 + DAY;
+    const limit = maxT || Date.now() / 1000 + DAY, low = minT ?? -Infinity;
     if (b - a < minSpan) { const c = (a + b) / 2; a = c - minSpan / 2; b = c + minSpan / 2; }
-    if (b > limit) { a -= b - limit; b = limit; }
+    if (b - a >= limit - low) { a = low; b = limit; }
+    else if (b > limit) { a -= b - limit; b = limit; }
+    else if (a < low) { b += low - a; a = low; }
     g.syncing = true;
     for (const u of g.charts) u.setScale('x', { min: a, max: b });
     g.syncing = false;
@@ -763,7 +778,7 @@ pages.metrics = async (main, _, params) => {
       const el = h('div', { class: 'chart' });
       out.append(card(`${defs.map(d => typeLabel(d.t)).join(' · ')}`, el, h('p', { class: 'small muted' }, 'Each unit has its own axis.')));
       const joined = defs.length > 1 ? uPlot.join(defs.map(d => dataFor(d).slice(0, 2))) : dataFor(defs[0]).slice(0, 2);
-      overlayChart = chart(el, { xs: joined[0], height: 420, hooks, series: defs.map((d, j) => ({
+      overlayChart = chart(el, { xs: joined[0], height: 420, hooks, zoom: false, series: defs.map((d, j) => ({
         label: typeLabel(d.t), color: d.color, unit: prettyUnit(unitOf(d)), dec: typeDec(d.t, unitOf(d)), scale: prettyUnit(unitOf(d)) || d.t, values: joined[j + 1],
         points: false, fill: isBars(d) ? d.color + '22' : undefined,
       })) });
@@ -782,7 +797,7 @@ pages.metrics = async (main, _, params) => {
           series.push({ label: 'min', color: d.color + '55', width: 1, unit, dec, values: cols[3] });
           bands = [{ series: [2, 3], fill: d.color + '1f' }];
         }
-        const u = chart(el, { xs: cols[0], series, bands, hooks, height: defs.length > 2 ? 200 : 260, sync: 'metrics' });
+        const u = chart(el, { xs: cols[0], series, bands, hooks, zoom: false, height: defs.length > 2 ? 200 : 260, sync: 'metrics' });
         stackCharts.push(u);
         group.attach(u);
       }
@@ -1401,7 +1416,7 @@ pages.glucose = async (main, _, params) => {
     const dailyEl = h('div', { class: 'chart' });
     body.replaceChildren(statsCard,
       card('Readings', h('div', { class: 'toolbar' }, overlayChips), readingsEl,
-        h('p', { class: 'small muted' }, 'Green band: target range. ', state.workouts ? 'Orange: workouts. ' : '', 'Overlays get their own axis; drag across the chart to zoom, double-click to reset.')),
+        h('p', { class: 'small muted' }, 'Green band: target range. ', state.workouts ? 'Orange: workouts. ' : '', 'Overlays get their own axis. Drag to move, scroll or Shift-drag to zoom, double-click to reset.')),
       days < 3 ? null : h('div', { class: 'grid cols-2' },
         card('Daily pattern (ambulatory glucose profile)', agpEl, h('p', { class: 'small muted' }, `Every day of the period folded onto one: median line, 25–75 % and 5–95 % bands, per 15 minutes${cgm ? '' : '. With finger-prick readings only, the bands are rough'}.`)),
         card('Time in range per day', dailyEl)));
