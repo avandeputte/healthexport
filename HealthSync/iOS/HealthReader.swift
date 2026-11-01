@@ -25,6 +25,7 @@ final class HealthReader {
         }
         // Beat-to-beat data is tracked by date rather than an anchor; without this a full resync skips it.
         defaults.removeObject(forKey: "heartbeats.since")
+        defaults.removeObject(forKey: activitySinceKey)
     }
 
     // MARK: - Driving the read
@@ -225,9 +226,16 @@ final class HealthReader {
 
     // MARK: - Activity summaries (rings)
 
+    /// Day of the last ring sync. Rings have no anchors, so the first sync sends every day and later syncs only the
+    /// days since the last one (plus two before it, in case a late Watch sync changed them).
+    private let activitySinceKey = "activity.since"
+
     private func emitActivitySummaries(_ emit: (SyncMessage) async throws -> Void) async throws {
         let cal = Calendar.current
-        var start = cal.dateComponents([.year, .month, .day], from: cal.date(byAdding: .year, value: -15, to: Date())!)
+        let today = cal.startOfDay(for: Date())
+        let from = (defaults.object(forKey: activitySinceKey) as? Date).flatMap { cal.date(byAdding: .day, value: -2, to: $0) }
+            ?? cal.date(byAdding: .year, value: -15, to: today)!
+        var start = cal.dateComponents([.year, .month, .day], from: from)
         var end = cal.dateComponents([.year, .month, .day], from: Date())
         start.calendar = cal; end.calendar = cal
         let predicate = HKQuery.predicate(forActivitySummariesBetweenStart: start, end: end)
@@ -246,6 +254,8 @@ final class HealthReader {
                 appleMoveTime: s.appleMoveTime.doubleValue(for: .minute()),
                 appleMoveTimeGoal: s.appleMoveTimeGoal.doubleValue(for: .minute()))))
         }
+        try await checkpoint()
+        defaults.set(today, forKey: activitySinceKey)
     }
 
     // MARK: - Helpers
