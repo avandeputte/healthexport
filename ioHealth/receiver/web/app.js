@@ -283,10 +283,13 @@ function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt,
   };
   const u = new uPlot(opts, [xs, ...series.map(sr => sr.values)], el);
   if (xRange) u.setScale('x', { min: xRange[0], max: xRange[1] });
-  if (zoom && xs.length > 1 && u.scales.x.min != null) {
+  if (zoom && xs.length > 1) {
     let g = sync && autoGroups.get(sync);
     if (!g) {
-      const home = [u.scales.x.min, u.scales.x.max];
+      // uPlot sets its scales only on the first draw, so the starting view comes from the data (half a step wider
+      // on each side when there are bars, so the first and last bars aren't cut).
+      const pad = series.some(sr => sr.bars) ? (xs[xs.length - 1] - xs[0]) / (xs.length - 1) / 2 : 0;
+      const home = xRange ? [...xRange] : [xs[0] - pad, xs[xs.length - 1] + pad];
       g = zoomGroup({ home, minT: home[0], maxT: home[1], minSpan: Math.max(Math.min(900, (home[1] - home[0]) / 50), 3 * (home[1] - home[0]) / xs.length) });
       if (sync) { autoGroups.set(sync, g); onCleanup(() => autoGroups.delete(sync)); }
     }
@@ -1421,20 +1424,44 @@ pages.glucose = async (main, _, params) => {
         card('Daily pattern (ambulatory glucose profile)', agpEl, h('p', { class: 'small muted' }, `Every day of the period folded onto one: median line, 25–75 % and 5–95 % bands, per 15 minutes${cgm ? '' : '. With finger-prick readings only, the bands are rough'}.`)),
         card('Time in range per day', dailyEl)));
 
-    const gx = g.readings.map(r => r[0]), gy = g.readings.map(r => gVal(r[1]));
-    const tables = [[gx, gy]];
+    // The readings chart covers the selected period at first; dragging or zooming past what's loaded fetches the readings,
+    // overlays and workouts for the new view, so it can be moved back through the whole history.
     const bucket = days <= 3 ? 'raw' : days <= 30 ? 'hour' : 'day';
-    const overlayData = await Promise.all(state.overlays.map(t => api('series', { type: t, from, to: today(), bucket: isCumulativeType(types, t) && bucket === 'raw' ? 'hour' : bucket }).catch(() => null)));
+    const wsShown = state.workouts ? [...ws] : [];
+    const overlaysFor = (a, b) => Promise.all(state.overlays.map(t => api('series', { type: t, from: a, to: b, bucket: isCumulativeType(types, t) && bucket === 'raw' ? 'hour' : bucket }).catch(() => null)));
     const defs = [];
+    const joinData = (readings, overlayData) => {
+      const tables = [[readings.map(r => r[0]), readings.map(r => gVal(r[1]))]];
+      state.overlays.forEach((t, k) => {
+        const sr = overlayData[k], d = defs.find(d => d.t === t);
+        if (!d) return;
+        tables.push(sr && sr.points.length ? [sr.points.map(p => p.t), sr.points.map(p => p.v * scaleFor(sr.unit))] : [[readings[0]?.[0] ?? 0], [null]]);
+      });
+      return tables.length > 1 ? uPlot.join(tables) : tables[0];
+    };
+    const fromT = days === 1 ? +from : Math.floor(new Date(from + 'T00:00:00').getTime() / 1000), nowT = Math.floor(Date.now() / 1000);
+    const overlayData = await overlaysFor(fromT, nowT);
     overlayData.forEach((sr, k) => {
-      if (!sr || !sr.points.length) return;
-      const t = state.overlays[k];
-      tables.push([sr.points.map(p => p.t), sr.points.map(p => p.v * scaleFor(sr.unit))]);
-      defs.push({ t, sr, color: PALETTE[(avail.indexOf(t) + 1) % PALETTE.length] });
+      if (sr && sr.points.length) defs.push({ t: state.overlays[k], sr, color: PALETTE[(avail.indexOf(state.overlays[k]) + 1) % PALETTE.length] });
     });
-    const joined = tables.length > 1 ? uPlot.join(tables) : tables[0];
-    chart(readingsEl, {
-      xs: joined[0], height: 340, hooks: { drawClear: [glucoseBackdrop(g.target, state.workouts ? ws : [])] },
+    const joined = joinData(g.readings, overlayData);
+    let loaded = [fromT, nowT], fetchSeq = 0;
+    const group = zoomGroup({ home: [fromT, nowT], onView: async ([a, b]) => {
+      if (a >= loaded[0] && b <= loaded[1]) return;
+      const span = b - a, fa = Math.floor(a - span), fb = Math.min(nowT, Math.ceil(b + span)), seq = ++fetchSeq;
+      try {
+        const [gg, od, ww] = await Promise.all([api('glucose', { from: fa, to: fb, low: target[0], high: target[1] }), overlaysFor(fa, fb),
+          state.workouts ? api('workouts', { from: fa, to: fb }) : []]);
+        if (seq !== fetchSeq || !gg.readings.length) return;
+        loaded = [fa, fb];
+        wsShown.splice(0, wsShown.length, ...(Array.isArray(ww) ? ww : ww.workouts || []));
+        const [va, vb] = group.view();
+        readingsChart.setData(joinData(gg.readings, od), false);
+        readingsChart.setScale('x', { min: va, max: vb });
+      } catch (e) { /* keep what's shown */ }
+    } });
+    const readingsChart = chart(readingsEl, {
+      xs: joined[0], height: 340, zoom: false, hooks: { drawClear: [glucoseBackdrop(g.target, wsShown)], setScale: [(u, key) => { if (key === 'x') group.scaled(u); }] },
       series: [
         { label: 'Glucose', color: '#e8445a', scale: 'g', unit: gUnit(), dec: mmol() ? 1 : 0, values: joined[1], points: !cgm || g.readings.length < 200, width: cgm ? 2 : 1.5,
           spanGaps: false, axisFmt: v => fmtNum(v, mmol() ? 1 : 0) },
@@ -1442,6 +1469,7 @@ pages.glucose = async (main, _, params) => {
           bars: d.sr.cumulative, width: 1.5, fill: d.sr.cumulative ? d.color + '66' : undefined })),
       ],
     });
+    group.attach(readingsChart);
     // Ambulatory glucose profile and per-day time in range, for periods of several days.
     if (days < 3) { /* one day: the readings chart says it all */ }
     else if (g.agp.length > 3) {
