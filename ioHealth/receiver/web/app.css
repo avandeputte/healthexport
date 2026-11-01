@@ -149,7 +149,7 @@ body.login { display: grid; place-items: center; min-height: 100vh; }
 .alert.warn { border-left-color: #f59e0b; } .alert.bad { border-left-color: var(--bad); } .alert.good { border-left-color: var(--good); }
 .alert a { margin-left: auto; white-space: nowrap; }
 .daynav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.scatter { width: 100%; height: auto; display: block; }
+.scatter { width: 100%; max-width: 860px; height: auto; display: block; margin: 0 auto; }
 .scatter circle:hover { stroke: var(--text); stroke-width: 2; }
 .corr-bar { display: inline-block; height: 8px; border-radius: 4px; vertical-align: middle; }
 
