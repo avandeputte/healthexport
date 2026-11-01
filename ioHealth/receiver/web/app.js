@@ -268,10 +268,10 @@ function observeWidth(el, f) {
 /* Unless zoom is false (the caller attaches its own zoomGroup), every chart gets drag to pan, wheel/pinch to zoom and
    Shift-drag to zoom, kept within its data; charts sharing a sync key move together. */
 const autoGroups = new Map();
-function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt, xIncrs, bands, legend = true, yRange, hooks, axisFmt, incrs, zoom = true }) {
+function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt, xIncrs, xSpace, bands, legend = true, yRange, hooks, axisFmt, incrs, zoom = true }) {
   const muted = cssVar('--muted'), line = cssVar('--line');
   const scales = { x: { time: xTime } };
-  const axes = [{ stroke: muted, grid: { stroke: line, width: 1 }, ticks: { stroke: line }, values: xFmt, incrs: xIncrs }];
+  const axes = [{ stroke: muted, grid: { stroke: line, width: 1 }, ticks: { stroke: line }, values: xFmt, incrs: xIncrs, space: xSpace }];
   const useries = [{ label: xTime ? 'Time' : '', value: xTime ? (u, v) => v == null ? '' : fmtDateTime(v) : (u, v) => v == null ? '' : (xFmt ? xFmt(u, [v])[0] : v) }];
   const seen = [];
   for (const sr of series) {
@@ -1998,7 +1998,7 @@ function responseCard(readings, workouts, carbPoints) {
         : 'Average change from the level in the 30 minutes before eating, per meal size. Carb entries less than 30 minutes apart count as one meal.'),
       h('div', { class: 'scroll', style: { maxHeight: '360px' } }, h('table', {}, h('thead', {}, h('tr', {}, ...heads.map((x, i) => h('th', { class: i > 1 ? 'r' : '' }, x)))), tb)),
       ...(rows.length > 60 ? [h('p', { class: 'small muted' }, `Latest 60 of ${rows.length}; the chart uses all of them.`)] : []));
-    chart(chartEl, { xs: mins.map(m => m * 60), xTime: false, height: 260, xIncrs: [1800, 3600], xFmt: (u, vals) => vals.map(v => fmtMin(v / 60)), series,
+    chart(chartEl, { xs: mins.map(m => m * 60), xTime: false, height: 260, xIncrs: [1800, 3600, 7200, 10800], xSpace: 64, xFmt: (u, vals) => vals.map(v => fmtMin(v / 60)), series,
       axisFmt: v => (v > 0 ? '+' : '') + fmtNum(v, mmol() ? 1 : 0),
       hooks: { drawClear: [u => { const ctx = u.ctx, x = u.valToPos(0, 'x', true), y = u.valToPos(0, 'y', true); ctx.save(); ctx.strokeStyle = cssVar('--muted'); ctx.setLineDash([4, 4]);
         ctx.beginPath(); ctx.moveTo(x, u.bbox.top); ctx.lineTo(x, u.bbox.top + u.bbox.height); ctx.moveTo(u.bbox.left, y); ctx.lineTo(u.bbox.left + u.bbox.width, y); ctx.stroke(); ctx.restore(); }] } });
@@ -2155,7 +2155,10 @@ pages.day = async (main, arg) => {
   const charts = [], later = [];
   const add = (titleText, el) => { charts.push(h('h3', { style: { marginTop: charts.length ? '14px' : 0 } }, titleText), el); };
   const xr = [t0, end];
-  const hourFmt = (u, vals) => vals.map(v => fmtTime(v));
+  const hourOnly = new Intl.DateTimeFormat(undefined, { hour: 'numeric' });
+  const hourFmt = (u, vals) => vals.map(v => v % 3600 === 0 ? hourOnly.format(new Date(v * 1000)) : fmtTime(v));
+  // Clock labels such as "10:00 PM" are wide: whole hours, spaced so they never touch whatever the chart's width.
+  const hourAxis = { xFmt: hourFmt, xIncrs: [300, 900, 1800, 3600, 7200, 10800, 14400, 21600, 43200], xSpace: 64 };
   if (gl?.readings?.length) {
     const el = h('div', { class: 'chart' });
     add('Blood glucose', el);
@@ -2163,7 +2166,7 @@ pages.day = async (main, arg) => {
     const tables = [[gl.readings.map(r => r[0]), gl.readings.map(r => gVal(r[1]))]];
     if (carbPts.length) tables.push([carbPts.map(p => p.t), carbPts.map(p => p.v)]);
     const d = tables.length > 1 ? uPlot.join(tables) : tables[0];
-    later.push(() => chart(el, { xs: d[0], height: 240, xRange: xr, xFmt: hourFmt, sync: 'day', hooks: { drawClear: [glucoseBackdrop(gl.target), backdrop] }, series: [
+    later.push(() => chart(el, { xs: d[0], height: 240, xRange: xr, ...hourAxis, sync: 'day', hooks: { drawClear: [glucoseBackdrop(gl.target), backdrop] }, series: [
       { label: 'Glucose', color: '#e8445a', scale: 'g', unit: gUnit(), dec: mmol() ? 1 : 0, values: d[1], spanGaps: false, points: gl.readings.length < 60, axisFmt: v => fmtNum(v, mmol() ? 1 : 0) },
       ...(carbPts.length ? [{ label: 'Carbs', color: '#f59e0b', fill: '#f59e0b99', scale: 'carbs', unit: 'g', dec: 0, values: d[2], bars: true, barMax: 8 }] : []),
     ] }));
@@ -2173,7 +2176,7 @@ pages.day = async (main, arg) => {
   if (hr?.points?.length) {
     const el = h('div', { class: 'chart' });
     add('Heart rate', el);
-    later.push(() => chart(el, { xs: hr.points.map(p => p.t), height: 180, xRange: xr, xFmt: hourFmt, sync: 'day', hooks: { drawClear: [backdrop] },
+    later.push(() => chart(el, { xs: hr.points.map(p => p.t), height: 180, xRange: xr, ...hourAxis, sync: 'day', hooks: { drawClear: [backdrop] },
       series: [{ label: 'Heart rate', color: '#e8445a', unit: 'bpm', dec: 0, values: hr.points.map(p => p.v), width: 1.5 }] }));
     for (const p of hr.points) csvRows.push([fmtLocal(p.t), 'heart_rate', csvNum(p.v, 0), 'bpm']);
   }
@@ -2185,7 +2188,7 @@ pages.day = async (main, arg) => {
     const series = [];
     if (steps?.points?.length) series.push({ label: 'Steps', color: '#2563eb', unit: '', dec: 0, values: d[1], bars: true, fill: '#2563ebaa' });
     if (energy?.points?.length) series.push({ label: 'Active energy', color: '#f97316', unit: 'kcal', dec: 0, values: d[series.length + 1], scale: 'kcal', width: 2 });
-    later.push(() => chart(el, { xs: d[0], height: 180, xRange: xr, xFmt: hourFmt, sync: 'day', hooks: { drawClear: [backdrop] }, series }));
+    later.push(() => chart(el, { xs: d[0], height: 180, xRange: xr, ...hourAxis, sync: 'day', hooks: { drawClear: [backdrop] }, series }));
     for (const x of [steps, energy]) for (const p of x?.points || []) csvRows.push([fmtLocal(p.t), x.type, csvNum(p.v, 1), prettyUnit(x.unit)]);
   }
   timeline.replaceChildren(charts.length ? card('Timeline', ...charts, h('p', { class: 'small muted' },
