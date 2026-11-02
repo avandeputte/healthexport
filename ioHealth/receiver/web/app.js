@@ -268,6 +268,44 @@ function observeWidth(el, f) {
 /* Unless zoom is false (the caller attaches its own zoomGroup), every chart gets drag to pan, wheel/pinch to zoom and
    Shift-drag to zoom, kept within its data; charts sharing a sync key move together. */
 const autoGroups = new Map();
+// A line on a time axis stops wherever the samples stop: a hole much longer than the usual spacing between
+// samples (and at least 30 minutes) is left empty instead of being bridged by a straight line.
+const gapCache = new WeakMap();
+function gapLimit(xs, ys) {
+  let c = gapCache.get(ys);
+  if (c && c.xs === xs) return c.limit;
+  const d = [];
+  let prev = -1;
+  for (let i = 0; i < ys.length; i++) if (ys[i] != null) { if (prev >= 0) d.push(xs[i] - xs[prev]); prev = i; }
+  d.sort((a, b) => a - b);
+  const limit = Math.max(1800, 2.5 * (d.length ? d[d.length >> 1] : 0));
+  gapCache.set(ys, { xs, limit });
+  return limit;
+}
+function sampleGaps(u, sidx, idx0, idx1, nullGaps) {
+  const xs = u.data[0], ys = u.data[sidx], limit = gapLimit(xs, ys), px = x => Math.round(u.valToPos(x, 'x', true));
+  const gaps = [...nullGaps];
+  let prev = -1;
+  for (let i = Math.max(0, idx0 - 1); i <= Math.min(ys.length - 1, idx1 + 1); i++) {
+    if (ys[i] == null) continue;
+    if (prev >= 0 && xs[i] - xs[prev] > limit) gaps.push([px(xs[prev]), px(xs[i])]);
+    prev = i;
+  }
+  return gaps.sort((a, b) => a[0] - b[0]);
+}
+// A sample with no neighbour on either side would vanish once the line breaks, so it gets a dot.
+function lonePoints(u, sidx, show) {
+  if (show) return null;
+  const xs = u.data[0], ys = u.data[sidx], limit = gapLimit(xs, ys), out = [];
+  const idx = [];
+  for (let i = 0; i < ys.length; i++) if (ys[i] != null) idx.push(i);
+  idx.forEach((i, k) => {
+    const a = k ? xs[i] - xs[idx[k - 1]] : Infinity, b = k < idx.length - 1 ? xs[idx[k + 1]] - xs[i] : Infinity;
+    if (a > limit && b > limit) out.push(i);
+  });
+  return out.length ? out : null;
+}
+
 function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt, xIncrs, xSpace, bands, legend = true, yRange, hooks, axisFmt, incrs, zoom = true }) {
   const muted = cssVar('--muted'), line = cssVar('--line');
   const scales = { x: { time: xTime } };
@@ -289,9 +327,10 @@ function chart(el, { xs, series, height = 240, sync, xTime = true, xRange, xFmt,
     }
     useries.push({
       label: sr.label, stroke: sr.color, scale: sc, width: sr.bars ? 0 : (sr.width ?? 2), dash: sr.dash,
-      fill: sr.bars ? (sr.fill || sr.color) : sr.fill, spanGaps: sr.spanGaps ?? true, show: sr.show ?? true,
+      fill: sr.bars ? (sr.fill || sr.color) : sr.fill, spanGaps: sr.bars ? true : xTime ? false : sr.spanGaps ?? true, show: sr.show ?? true,
       paths: sr.bars ? uPlot.paths.bars({ size: [0.75, sr.barMax || 48], align: 1 }) : sr.stepped ? uPlot.paths.stepped({ align: 1 }) : undefined,
-      points: { show: sr.points ?? false, size: 5, fill: sr.color },
+      points: { show: sr.points ?? false, size: 5, fill: sr.color, filter: !sr.bars && xTime ? lonePoints : undefined },
+      gaps: !sr.bars && xTime ? sampleGaps : undefined,
       value: sr.value || ((u, v) => v == null ? '—' : fmtNum(v, sr.dec ?? 1) + (sr.unit ? ' ' + sr.unit : '')),
     });
   }
